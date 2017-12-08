@@ -147,16 +147,18 @@ module LUA
 
   // functions
   syntax FuncPtr ::= "Func" "<" Int ">"
-  syntax FuncDef ::= "FuncDef" "<" ParamList "," Block ">"
-                   | "FuncDef" "<" Block ">"
+  syntax FuncDef ::= "FuncDef" "<" ParamList "," Block "," Map ">"
+                   | "FuncDef" "<" Block "," Map ">"
 
   rule <k> function(Args:ParamList) Block:Block end => Func<!L:Int> ...</k>
-       <heap> M:Map => M[!L <- FuncDef<Args, Block>] </heap>
+       <env> Env </env>
+       <heap> M:Map => M[!L <- FuncDef<Args, Block, Env>] </heap>
   rule <k> function() Block:Block end => Func<!L:Int> ...</k>
-       <heap> M:Map => M[!L <- FuncDef<Block>] </heap>
+       <env> Env </env>
+       <heap> M:Map => M[!L <- FuncDef<Block, Env>] </heap>
 
   rule function (Name:IdDotList : Ns:Id):FuncName (Args:ParamList) Body:Block end => function Name . Ns (self, Args:ParamList) Body end
-  rule function Name:Id Body:FuncBody => #varSet(Name, function Body)
+  rule (function Name:Id Body:FuncBody):Statement => #varSet(Name, function Body)
   rule <k> function Name:IdDotList Body:FuncBody => #idDotListToVar(Name:IdDotList) ~> #varSetf1(function Body) ...</k>
        <keepVar> _ => true </keepVar>
   rule local function Name:Id Body:FuncBody => local Name = function Body
@@ -222,6 +224,8 @@ module LUA
   syntax FunctionCall ::= "#varSet" "(" Var "," Expression ")" [strict(2)]
                         | "#varSetf1" "(" Expression ")"
   rule #varSet(N:Id, V:Expression) => #varSetlocal(Id2String(N), V:Expression)
+  rule #varSet(N:PrefixExpression [ K:Expression ], V:Expression) => #set(N, K, V)
+  rule #varSet((N:PrefixExpression . K:Id):Var, V:Expression) => #set(N, Id2String(K), V)
   rule <k> N:Var ~> #varSetf1(V:Expression) => #varSet(N, V) ...</k>
        <keepVar> true => false </keepVar>
 
@@ -302,28 +306,36 @@ module LUA
 
   // function call
   syntax FunctionCall ::= "#call" "(" FunctionRef "," ExpressionList ")"
-                        | "#call_" "(" Expression "," ExpressionList ")" [strict(1)]
-                        | "#call_f2" "(" Expression ")"
+                        | "#call_entry" "(" Expression "," ExpressionList ")" [strict(1)]
+                        | "#call_entry" "(" FuncDef "," ExpressionList ")"
                         | "#call_" "(" FuncDef "," ExpressionList ")"
+                        | "#call_f2" "(" Expression ")"
   rule F:FunctionRef(Args:ExpressionList) => #call(F, Args)
   rule #call(E:PrefixExpression : Es:Id, Args:ExpressionList) => #call((E . Es), (E:PrefixExpression, Args:ExpressionList))
   rule #call(E:PrefixExpression, Args:ExpressionList) => #evalList(Args) ~> #call_f2(E)
-  rule E:ExpressionList ~> #call_f2(F:Expression) => #call_(F, E)
-  rule <k> #call_(Func<L:Int>, Args:ExpressionList) => #enter(CallFrame, #call_(M:FuncDef, Args)) ...</k>
+  rule E:ExpressionList ~> #call_f2(F:Expression) => #call_entry(F, E)
+  rule <k> #call_entry(Func<L:Int>, Args:ExpressionList) => #enter(CallFrame, #call_entry(M:FuncDef, Args)) ...</k>
        <heap>... L |-> M:FuncDef ...</heap>
-  rule #call_(FuncDef<(N:Id, Ns:ParamList), B:Block>, (Arg:Expression, Args:ExpressionList)) =>
-    #defineLocal(Id2String(N)) ~> #varSetlocal(Id2String(N), Arg) ~> #call_(FuncDef<Ns, B>, Args)
-  rule #call_(FuncDef<N:Id, B:Block>, (Arg:Expression, Args:ExpressionList)) =>
-    #defineLocal(Id2String(N)) ~> #varSetlocal(Id2String(N), Arg) ~> #call_(FuncDef<B>, Args)
-  rule #call_(FuncDef<(...):Varargs, B:Block>, Args:ExpressionList) =>
-    #defineLocal("...") ~> #varSetlocal("...", Args:ExpressionList) ~> #call_(FuncDef<B>, .ExpressionList)
-  rule #call_(FuncDef<B:Block>, Args:ExpressionList) => B
+  rule #call_entry(FuncDef<P:ParamList, B:Block, Env:Map>, Args:ExpressionList) =>
+    #setEnv(Env["..." <- nil]) ~> #call_(FuncDef<P, B, Env>, Args)
+  rule #call_entry(FuncDef<B:Block, Env:Map>, Args:ExpressionList) => #setEnv(Env) ~> #call_(FuncDef<B, Env>, Args)
+  rule #call_(FuncDef<(N:Id, Ns:ParamList), B:Block, Env:Map>, (Arg:Expression, Args:ExpressionList)) =>
+    #defineLocal(Id2String(N)) ~> #varSetlocal(Id2String(N), Arg) ~> #call_(FuncDef<Ns, B, Env>, Args)
+  rule #call_(FuncDef<N:Id, B:Block, Env:Map>, (Arg:Expression, Args:ExpressionList)) =>
+    #defineLocal(Id2String(N)) ~> #varSetlocal(Id2String(N), Arg) ~> #call_(FuncDef<B, Env>, Args)
+  rule #call_(FuncDef<(...):Varargs, B:Block, Env:Map>, Args:ExpressionList) =>
+    #defineLocal("...") ~> #varSetlocal("...", Args:ExpressionList) ~> #call_(FuncDef<B, Env>, .ExpressionList)
+  rule #call_(FuncDef<B:Block, Env:Map>, Args:ExpressionList) => B
+
+  syntax KItem ::= "#setEnv" "(" Map ")"
+  rule <k> #setEnv(M:Map) => . ...</k>
+       <env> _ => M:Map </env>
 
   syntax StackFrame ::= "StackFrame" "<" FrameType "," Map "," K ">"
   syntax FrameType ::= "CallFrame" | "LoopFrame" | "ScopeFrame"
   syntax KItem ::= "#enter" "(" FrameType "," K ")"
   rule <k> (#enter(T:FrameType, B) ~> Rest) => B </k>
-       <env> M => M["..." <- nil] </env>
+       <env> M </env>
        <fstack> .List => ListItem(StackFrame<T, M, Rest>) ...</fstack>
   syntax KItem ::= "#return" "(" FrameType "," ExpressionList ")"
                  | "#return" "(" FrameType ")"
@@ -336,10 +348,12 @@ module LUA
   rule <k> #return_(T:FrameType, E:ExpressionList) => #return_(T:FrameType, E:ExpressionList) </k>
        <fstack> ListItem(StackFrame<Type, M, Rest>) => .List ...</fstack> when Type =/=K T
   rule <k> #return_(T:FrameType, E:ExpressionList) => E ~> Rest </k>
+       <env> _ => M </env>
        <fstack> ListItem(StackFrame<T, M, Rest>) => .List ...</fstack>
   rule <k> #return_(T:FrameType) => #return_(T:FrameType) </k>
        <fstack> ListItem(StackFrame<Type, M, Rest>) => .List ...</fstack> when Type =/=K T
   rule <k> #return_(T:FrameType) => Rest </k>
+       <env> _ => M </env>
        <fstack> ListItem(StackFrame<T, M, Rest>) => .List ...</fstack>
   rule <k> . => Rest </k>
        <env> _ => M </env>
@@ -347,6 +361,9 @@ module LUA
 
   // math
   rule A:Float + B:Float => A +Float B
+  rule A:Float - B:Float => A -Float B
+  rule A:Float * B:Float => A *Float B
+  rule A:Float / B:Float => A /Float B
 
   syntax FunctionCall ::= "#concat" "(" Expression "," Expression ")" [strict]
                         | "#concat_" "(" Expression "," Expression ")" [strict]
@@ -359,6 +376,7 @@ module LUA
   rule B:Bool ~> #not_f() => notBool(B)
 
   rule A:Bool or B:Bool => A orBool B
+  rule A:Bool and B:Bool => A andBool B
   rule A:Float < B:Float => A <Float B
 
   syntax FunctionCall ::= "#equal" "(" Expression "," Expression ")" [strict]
@@ -369,6 +387,9 @@ module LUA
 
   rule A:Literal <= B:Literal => (A == B) or (A < B)
   rule A:Literal ~= B:Literal => not (A == B)
+
+  rule A:Literal > B:Literal => not (A <= B)
+  rule A:Literal >= B:Literal => not (A < B)
 
   syntax FunctionCall ::= "#len_" "(" TablePtr "," Expression ")" [strict]
                         | "#len_f" "(" TablePtr "," Expression ")"
@@ -381,6 +402,11 @@ module LUA
   rule #tobool(false) => false
   rule #tobool(nil) => false
   rule #tobool(L:Literal) => true when notBool(L ==K false orBool L ==K nil)
+
+  syntax FunctionCall ::= "#tonumber" "(" ExpressionList ")"
+                        | "#tonumber_f" "(" ")"
+  rule #tonumber(E:Expression, _:ExpressionList) => #eval(E) ~> #tonumber_f()
+  rule (N:Float, _:ExpressionList) ~> #tonumber_f() => N
 
   // return
   rule R:ReturnStatement ; => R
@@ -409,4 +435,25 @@ module LUA
 
   // repeat
   rule repeat B:Block until E:Expression => #enter(LoopFrame, B ~> #while(not E, B))
+
+  // for
+  syntax KItem ::= "#for" "(" Id "," Expression "," Expression "," Expression "," Block ")" [strict(2, 3, 4)]
+                 | "#for_step1" "(" Id "," Expression "," Expression "," Expression "," Block ")"
+                 | "#for_step2" "(" Id "," Expression "," Expression "," Expression "," Block ")"
+                 | "#for_step3" "(" Id "," Expression "," Expression "," Expression "," Block ")"
+  rule for N:Id = X:Expression, Y:Expression do B:Block end => for N = X, Y, 1 do B end
+  rule for N:Id = X:Expression, Y:Expression, Z:Expression do B:Block end =>
+    #enter(LoopFrame, #for(N, #tonumber(X), #tonumber(Y), #tonumber(Z), B))
+  rule #for(N:Id, Var:Float, Limit:Float, Step:Float, B:Block) =>
+    #for_step1(N, Var -Float Step, Limit, Step, B) when Step =/=Float 0
+  rule #for(N:Id, Var:Float, Limit:Float, 0, B:Block) => .
+  rule #for_step1(N:Id, Var:Float, Limit:Float, Step:Float, B:Block) => #for_step2(N, Var +Float Step, Limit, Step, B)
+  rule #for_step2(N:Id, Var:Float, Limit:Float, Step:Float, B:Block) =>
+    (Step >= 0 and Var > Limit) or (Step < 0 and Var < Limit) ~> #for_step3(N, Var, Limit, Step, B)
+  rule true ~> #for_step3(N:Id, Var:Float, Limit:Float, Step:Float, B:Block) => break
+  rule false ~> #for_step3(N:Id, Var:Float, Limit:Float, Step:Float, B:Block) =>
+    local N = Var ~> B ~> #for_step1(N, Var, Limit, Step, B)
+
+  // errors
+  syntax FunctionCall ::= "#error" "(" ")"
 endmodule
