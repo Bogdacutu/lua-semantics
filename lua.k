@@ -11,10 +11,22 @@ module LUA-SYNTAX
   syntax Statement ::= ";"
                      | VarList "=" NeExpressionList
                      | FunctionCall
+                     | "break"
+                     | "do" Block "end"
+                     | "while" Expression "do" Block "end"
+                     | "repeat" Block "until" Expression
+                     | "if" Expression "then" Block EndIf [strict(1)]
+                     | "for" Id "=" Expression "," Expression "do" Block "end"
+                     | "for" Id "=" Expression "," Expression "," Expression "do" Block "end"
+                     | "for" IdList "in" NeExpressionList "do" Block "end"
                      | "function" FuncName FuncBody
                      | "local" IdList
                      | "local" IdList "=" NeExpressionList
   syntax Statements ::= List{Statement, " "} [klabel(Statements)]
+
+  syntax EndIf ::= "end"
+                 | "else" Block "end"
+                 > "elseif" Expression "then" Block EndIf
 
   syntax FuncName ::= IdDotList
                     | IdDotList ":" Id
@@ -32,8 +44,11 @@ module LUA-SYNTAX
                       | TableConstructor
                       | "function" FuncBody
                       | Varargs
+                      > "not" Expression
                       > Expression "+" Expression [left, strict]
                       > Expression ".." Expression [left, strict]
+                      > Expression "<" Expression [left, strict]
+                      | Expression "==" Expression [left, strict]
   syntax ExpressionList ::= List{Expression, ","} [klabel(ExpressionList)]
   syntax NeExpressionList ::= NeList{Expression, ","} [klabel(NeExpressionList)]
 
@@ -277,10 +292,21 @@ module LUA
   rule #concat(A, B) => #concat_(#tostring(A), #tostring(B))
   rule #concat_(A:String, B:String) => A +String B
 
+  rule not A:Bool => notBool A
+
+  rule A:Float < B:Float => A <Float B
+  rule A:Float == B:Float => A ==Float B
+
   // return
   syntax KItem ::= "#return_f1"
   rule R:ReturnStatement ~> S:Statement => R
   rule R:ReturnStatement ; => R
   rule return E:ExpressionList ~> #popFuncCall => #dereflist(E) ~> #return_f1
   rule E:ExpressionList ~> #return_f1 => #popFuncCall ~> E
+
+  // if
+  rule if true then B:Block E:EndIf => B
+  rule if false then _:Block E:EndIf => E
+  rule else B:Block end => B
+  rule elseif E:Expression then B:Block F:EndIf => if E then B F
 endmodule
