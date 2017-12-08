@@ -20,6 +20,7 @@ module LUA-SYNTAX
                      | "for" Id "=" Expression "," Expression "," Expression "do" Block "end"
                      | "for" IdList "in" NeExpressionList "do" Block "end"
                      | "function" FuncName FuncBody
+                     | "local" "function" Id FuncBody
                      | "local" IdList
                      | "local" IdList "=" NeExpressionList
   syntax Statements ::= List{Statement, " "} [klabel(Statements)]
@@ -81,6 +82,7 @@ module LUA-SYNTAX
                        | PrefixExpression ":" Id
 
   syntax FuncBody ::= "(" ParamList ")" Block "end"
+                    | "(" ")" Block "end"
   syntax ParamList ::= Varargs
                      | Id
                      > Id "," ParamList
@@ -150,11 +152,14 @@ module LUA
 
   rule <k> function(Args:ParamList) Block:Block end => Func<!L:Int> ...</k>
        <heap> M:Map => M[!L <- FuncDef<Args, Block>] </heap>
+  rule <k> function() Block:Block end => Func<!L:Int> ...</k>
+       <heap> M:Map => M[!L <- FuncDef<Block>] </heap>
 
   rule function (Name:IdDotList : Ns:Id):FuncName (Args:ParamList) Body:Block end => function Name . Ns (self, Args:ParamList) Body end
   rule function Name:Id Body:FuncBody => #varSet(Name, function Body)
   rule <k> function Name:IdDotList Body:FuncBody => #idDotListToVar(Name:IdDotList) ~> #varSetf1(function Body) ...</k>
        <keepVar> _ => true </keepVar>
+  rule local function Name:Id Body:FuncBody => local Name = function Body
 
   syntax FunctionCall ::= "#idDotListToVar" "(" IdDotList ")"
                         | "#idDotListToVar_" "(" IdDotList "," Var ")"
@@ -271,7 +276,7 @@ module LUA
   // builtin get
   syntax FunctionCall ::= "#get" "(" Expression "," Expression ")" [strict]
   syntax FunctionCall ::= "#rawget" "(" Expression "," Expression ")" [strict]
-  rule #get(T, N) => #rawget(T, N)
+  rule #get(T:TablePtr, N:Literal) => #rawget(T, N)
   rule <k> #rawget(Table<T:Int>, Name) => M:Map[Name] ...</k>
        <heap>... T |-> M:Map ...</heap> when Name in keys(M)
   rule <k> #rawget(Table<T:Int>, Name) => nil ...</k>
@@ -349,9 +354,11 @@ module LUA
   rule #concat(A, B) => #concat_(#tostring(A), #tostring(B))
   rule #concat_(A:String, B:String) => A +String B
 
-  rule not A:Bool => notBool A
-  rule A:Bool or B:Bool => A orBool B
+  syntax KItem ::= "#not_f" "(" ")"
+  rule not E:Expression => #tobool(E) ~> #not_f()
+  rule B:Bool ~> #not_f() => notBool(B)
 
+  rule A:Bool or B:Bool => A orBool B
   rule A:Float < B:Float => A <Float B
 
   syntax FunctionCall ::= "#equal" "(" Expression "," Expression ")" [strict]
@@ -379,9 +386,11 @@ module LUA
   rule R:ReturnStatement ; => R
   rule return E:ExpressionList => #return(CallFrame, E:ExpressionList)
 
-  // if -- TODO: tobool
-  rule if true then B:Block E:EndIf => #enter(ScopeFrame, B)
-  rule if false then _:Block E:EndIf => E
+  // if
+  syntax KItem ::= "#if_f" "(" Block "," EndIf ")"
+  rule if E:Expression then B:Block F:EndIf => #tobool(E) ~> #if_f(B, F)
+  rule true ~> #if_f(B:Block, E:EndIf) => #enter(ScopeFrame, B)
+  rule false ~> #if_f(B:Block, E:EndIf) => E
   rule else B:Block end => #enter(ScopeFrame, B)
   rule elseif E:Expression then B:Block F:EndIf => if E then B F
   rule end => .
@@ -397,4 +406,7 @@ module LUA
   rule true ~> #while_f(E:Expression, B:Block) => #enter(ScopeFrame, B) ~> #while(E, B)
   rule false ~> #while_f(E:Expression, B:Block) => .
   rule break => #return(LoopFrame)
+
+  // repeat
+  rule repeat B:Block until E:Expression => #enter(LoopFrame, B ~> #while(not E, B))
 endmodule
