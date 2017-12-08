@@ -44,10 +44,13 @@ module LUA-SYNTAX
                       | TableConstructor
                       | "function" FuncBody
                       | Varargs
-                      > "not" Expression
+                      > "not" Expression [strict]
+                      | "#" Expression [strict]
                       > Expression "+" Expression [left, strict]
+                      | Expression "-" Expression [left, strict]
                       > Expression ".." Expression [left, strict]
                       > Expression "<" Expression [left, strict]
+                      | Expression "~=" Expression [left, strict]
                       | Expression "==" Expression [left, strict]
   syntax ExpressionList ::= List{Expression, ","} [klabel(ExpressionList)]
   syntax NeExpressionList ::= NeList{Expression, ","} [klabel(NeExpressionList)]
@@ -66,11 +69,20 @@ module LUA-SYNTAX
                      > Id "," ParamList
 
   syntax Var ::= Id
-               | PrefixExpression "[" Expression "]"
+               | PrefixExpression "[" Expression "]" [strict(2)]
                | PrefixExpression "." Id
   syntax VarList ::= NeList{Var, ","}
 
-  syntax TableConstructor ::= "{" "}"
+  syntax TableConstructor ::= "{" FieldList "}"
+                            | "{" FieldList FieldSep "}"
+                            | "{" FieldSep "}"
+                            | "{" "}"
+  syntax FieldList ::= Field
+                     | Field FieldSep FieldList
+  syntax FieldSep ::= "," | ";"
+  syntax Field ::= "[" Expression "]" "=" Expression
+                 | Id "=" Expression
+                 | Expression
 endmodule
 
 module LUA
@@ -80,7 +92,7 @@ module LUA
   configuration <T>
                   <k>
                     #defineEnv({})
-                    ~> _G = _ENV
+                    ~> (_G = _ENV):Statement
                     ~> function print(...) #print(...) end
                     ~> $PGM:Block
                   </k>
@@ -100,6 +112,14 @@ module LUA
 
   rule <k> {} => Table<!L:Int> ...</k>
        <heap> M:Map => M[!L <- .Map] </heap>
+
+  syntax KItem ::= "#buildTable" "(" Expression "," Expression "," FieldList ")" [strict(1, 2)]
+  rule {... S:FieldSep => . }
+  rule { L:FieldList } => #buildTable({}, 1, L)
+  rule #buildTable(T:TablePtr, Pos:Float, V:Expression _:FieldSep Ls:FieldList) => #set(T, Pos, V) ~> #buildTable(T, Pos + 1, Ls)
+  rule #buildTable(T:TablePtr, Pos:Float, V:Expression) => #set(T, Pos, V) ~> T
+  rule #buildTable(T:TablePtr, Pos:Float, K:Id = V:Expression _:FieldSep Ls:FieldList) => #set(T, Id2String(K), V) ~> #buildTable(T, Pos, Ls)
+  rule #buildTable(T:TablePtr, Pos:Float, K:Id = V:Expression) => #set(T, Id2String(K), V) ~> T
 
   // runtime
   syntax FunctionCall ::= "#defineEnv" "(" Expression ")" [strict]
@@ -121,8 +141,8 @@ module LUA
        <heap> M:Map => M[!L <- FuncDef<Args, Block>] </heap>
 
   rule function (Name:IdDotList : Ns:Id):FuncName (Args:ParamList) Body:Block end => function Name . Ns (self, Args:ParamList) Body end
-  rule function Name:Id Body:FuncBody => #varset(Name, function Body)
-  rule <k> function Name:IdDotList Body:FuncBody => #idDotListToVar(Name:IdDotList) ~> #varsetf1(function Body) ...</k>
+  rule function Name:Id Body:FuncBody => #varSet(Name, function Body)
+  rule <k> function Name:IdDotList Body:FuncBody => #idDotListToVar(Name:IdDotList) ~> #varSetf1(function Body) ...</k>
        <keepVar> _ => true </keepVar>
 
   syntax FunctionCall ::= "#idDotListToVar" "(" IdDotList ")"
@@ -131,11 +151,11 @@ module LUA
   rule #idDotListToVar_((N:Id . Ns:IdDotList), V:Var) => #idDotListToVar_(Ns, (V . N))
   rule #idDotListToVar_(.IdDotList, V:Var) => V
 
-  syntax FunctionCall ::= "#reverselist" "(" ExpressionList ")"
-                        | "#reverselist_" "(" ExpressionList "," ExpressionList ")"
-  rule #reverselist(I) => #reverselist_(I, .ExpressionList)
-  rule #reverselist_((I:Expression, Is:ExpressionList), J) => #reverselist_(Is, (I:Expression, J:ExpressionList))
-  rule #reverselist_(.ExpressionList, J) => J
+  syntax FunctionCall ::= "#reverseList" "(" ExpressionList ")"
+                        | "#reverseList_" "(" ExpressionList "," ExpressionList ")"
+  rule #reverseList(I) => #reverseList_(I, .ExpressionList)
+  rule #reverseList_((I:Expression, Is:ExpressionList), J) => #reverseList_(Is, (I:Expression, J:ExpressionList))
+  rule #reverseList_(.ExpressionList, J) => J
 
   // dereferencing single expression
   syntax KItem ::= "#deref" "(" Expression ")"
@@ -145,75 +165,75 @@ module LUA
   rule E:Literal ~> #deref_() => (E, .ExpressionList)
 
   // dereferencing multiple expressions
-  syntax FunctionCall ::= "#dereflist" "(" ExpressionList ")"
-                        | "#dereflist_f0" "(" ")"
-                        | "#dereflistne" "(" NeExpressionList ")"
-                        | "#dereflist_f2" "(" ExpressionList "," ExpressionList ")"
-                        | "#dereflist_f3" "(" ExpressionList ")"
-  rule #dereflist(.ExpressionList) => .ExpressionList
-  rule #dereflist(N:Expression, Ns:ExpressionList) => #deref(N) ~> #dereflist_f2(Ns, .ExpressionList)
-  rule V:ExpressionList ~> #dereflist_f2(N:ExpressionList, R:ExpressionList) => #concatlist(R:ExpressionList, V:ExpressionList) ~> #dereflist_f3(N)
-  rule R:ExpressionList ~> #dereflist_f3(N:Expression, Ns:ExpressionList) => #deref(N) ~> #dereflist_f2(Ns, R)
-  rule R:ExpressionList ~> #dereflist_f3(.ExpressionList) => R
-  rule V:ExpressionList ~> #dereflist_f0() => #dereflist(V:ExpressionList)
-  rule #dereflistne(V:NeExpressionList) => #neexprlisttoexprlist(V) ~> #dereflist_f0()
+  syntax FunctionCall ::= "#derefList" "(" ExpressionList ")"
+                        | "#derefList_f0" "(" ")"
+                        | "#derefListne" "(" NeExpressionList ")"
+                        | "#derefList_f2" "(" ExpressionList "," ExpressionList ")"
+                        | "#derefList_f3" "(" ExpressionList ")"
+  rule #derefList(.ExpressionList) => .ExpressionList
+  rule #derefList(N:Expression, Ns:ExpressionList) => #deref(N) ~> #derefList_f2(Ns, .ExpressionList)
+  rule V:ExpressionList ~> #derefList_f2(N:ExpressionList, R:ExpressionList) => #concatList(R:ExpressionList, V:ExpressionList) ~> #derefList_f3(N)
+  rule R:ExpressionList ~> #derefList_f3(N:Expression, Ns:ExpressionList) => #deref(N) ~> #derefList_f2(Ns, R)
+  rule R:ExpressionList ~> #derefList_f3(.ExpressionList) => R
+  rule V:ExpressionList ~> #derefList_f0() => #derefList(V:ExpressionList)
+  rule #derefListne(V:NeExpressionList) => #neExprListToExprList(V) ~> #derefList_f0()
 
-  syntax FunctionCall ::= "#concatlist" "(" ExpressionList "," ExpressionList ")"
-                        | "#concatlist_" "(" ExpressionList "," ExpressionList ")"
-                        | "#concatlist_f1" "(" ExpressionList ")"
-  rule #concatlist(A:ExpressionList, B:ExpressionList) => #reverselist(A) ~> #concatlist_f1(B)
-  rule A:ExpressionList ~> #concatlist_f1(B:ExpressionList) => #concatlist_(A, B)
-  rule #concatlist_((A:Expression, As:ExpressionList), B:ExpressionList) => #concatlist_(As, (A:Expression, B:ExpressionList))
-  rule #concatlist_(.ExpressionList, B:ExpressionList) => B
+  syntax FunctionCall ::= "#concatList" "(" ExpressionList "," ExpressionList ")"
+                        | "#concatList_" "(" ExpressionList "," ExpressionList ")"
+                        | "#concatList_f1" "(" ExpressionList ")"
+  rule #concatList(A:ExpressionList, B:ExpressionList) => #reverseList(A) ~> #concatList_f1(B)
+  rule A:ExpressionList ~> #concatList_f1(B:ExpressionList) => #concatList_(A, B)
+  rule #concatList_((A:Expression, As:ExpressionList), B:ExpressionList) => #concatList_(As, (A:Expression, B:ExpressionList))
+  rule #concatList_(.ExpressionList, B:ExpressionList) => B
 
   // variable set
-  syntax FunctionCall ::= "#neexprlisttoexprlist" "(" NeExpressionList ")"
-                        | "#neexprlisttoexprlist_" "(" NeExpressionList "," ExpressionList ")"
-  rule #neexprlisttoexprlist(L) => #neexprlisttoexprlist_(L, .ExpressionList)
-  rule #neexprlisttoexprlist_((A:Expression, As:NeExpressionList), B:ExpressionList) => #neexprlisttoexprlist_(As, (A:Expression, B:ExpressionList))
-  rule #neexprlisttoexprlist_(.NeExpressionList, B:ExpressionList) => #reverselist(B)
+  syntax FunctionCall ::= "#neExprListToExprList" "(" NeExpressionList ")"
+                        | "#neExprListToExprList_" "(" NeExpressionList "," ExpressionList ")"
+  rule #neExprListToExprList(L) => #neExprListToExprList_(L, .ExpressionList)
+  rule #neExprListToExprList_((A:Expression, As:NeExpressionList), B:ExpressionList) => #neExprListToExprList_(As, (A:Expression, B:ExpressionList))
+  rule #neExprListToExprList_(.NeExpressionList, B:ExpressionList) => #reverseList(B)
 
-  syntax FunctionCall ::= "#varsetlist" "(" VarList "," NeExpressionList ")"
-                        | "#varsetlist_" "(" VarList "," ExpressionList ")"
-                        | "#varsetlist_f0" "(" VarList ")"
-  rule N:VarList = V:NeExpressionList => #varsetlist(N, V:NeExpressionList)
-  rule #varsetlist(N, V) => #dereflistne(V) ~> #varsetlist_f0(N)
-  rule V:ExpressionList ~> #varsetlist_f0(N:VarList) => #varsetlist_(N, V)
-  rule #varsetlist_((N:Var, Ns:VarList), (V:Expression, Vs:ExpressionList)) => #varset(N, V) ~> #varsetlist_(Ns, Vs)
-  rule #varsetlist_(.VarList, V:ExpressionList) => .
-  rule #varsetlist_((N:Var, Ns:VarList), .ExpressionList) => #varsetlist_((N:Var, Ns:VarList), (nil, .ExpressionList))
+  syntax FunctionCall ::= "#varSetList" "(" VarList "," NeExpressionList ")"
+                        | "#varSetList_" "(" VarList "," ExpressionList ")"
+                        | "#varSetList_f0" "(" VarList ")"
+  rule N:VarList = V:NeExpressionList => #varSetList(N, V:NeExpressionList)
+  rule #varSetList(N, V) => #derefListne(V) ~> #varSetList_f0(N)
+  rule V:ExpressionList ~> #varSetList_f0(N:VarList) => #varSetList_(N, V)
+  rule #varSetList_((N:Var, Ns:VarList), (V:Expression, Vs:ExpressionList)) => #varSet(N, V) ~> #varSetList_(Ns, Vs)
+  rule #varSetList_(.VarList, V:ExpressionList) => .
+  rule #varSetList_((N:Var, Ns:VarList), .ExpressionList) => #varSetList_((N:Var, Ns:VarList), (nil, .ExpressionList))
 
-  syntax FunctionCall ::= "#varset" "(" Var "," Expression ")" [strict(2)]
-                        | "#varsetf1" "(" Expression ")"
-  rule #varset(N:Id, V:Expression) => #varsetlocal(Id2String(N), V:Expression)
-  rule <k> N:Var ~> #varsetf1(V:Expression) => #varset(N, V) ...</k>
+  syntax FunctionCall ::= "#varSet" "(" Var "," Expression ")" [strict(2)]
+                        | "#varSetf1" "(" Expression ")"
+  rule #varSet(N:Id, V:Expression) => #varSetlocal(Id2String(N), V:Expression)
+  rule <k> N:Var ~> #varSetf1(V:Expression) => #varSet(N, V) ...</k>
        <keepVar> true => false </keepVar>
 
-  syntax FunctionCall ::= "#varsetlocal" "(" String "," Expression ")" [strict(2)]
-                        | "#varsetlocal" "(" String "," ExpressionList ")"
-  rule <k> #varsetlocal(N, V:Expression) => . ...</k>
+  syntax FunctionCall ::= "#varSetlocal" "(" String "," Expression ")" [strict(2)]
+                        | "#varSetlocal" "(" String "," ExpressionList ")"
+  rule <k> #varSetlocal(N, V:Expression) => . ...</k>
        <env>... N |-> L:Int ...</env>
        <store>... L |-> (_ => V) ...</store>
-  rule <k> #varsetlocal(N, V:ExpressionList) => . ...</k>
+  rule <k> #varSetlocal(N, V:ExpressionList) => . ...</k>
        <env>... N |-> L:Int ...</env>
        <store>... L |-> (_ => V) ...</store> // special case for varargs
-  rule <k> #varsetlocal(N, V) => #set(_ENV, N, V) ...</k>
+  rule <k> #varSetlocal(N, V) => #set(_ENV, N, V) ...</k>
        <env> M </env> when notBool(N in keys(M))
 
-  syntax FunctionCall ::= "#definelocal" "(" String ")"
-  rule <k> #definelocal(N) => . ...</k>
+  syntax FunctionCall ::= "#defineLocal" "(" String ")"
+  rule <k> #defineLocal(N) => . ...</k>
        <env> M => M[N <- !L:Int] </env>
        <store> R => R[!L <- nil] </store>
 
-  syntax FunctionCall ::= "#defineandsetlocallist" "(" IdList "," NeExpressionList ")"
-                        | "#defineandsetlocallist_f0" "(" IdList ")"
-                        | "#defineandsetlocallist_" "(" IdList "," ExpressionList ")"
-  rule local N:IdList = V:NeExpressionList => #defineandsetlocallist(N, V)
-  rule #defineandsetlocallist(N, V) => #dereflistne(V) ~> #defineandsetlocallist_f0(N)
-  rule V:ExpressionList ~> #defineandsetlocallist_f0(N:IdList) => #defineandsetlocallist_(N, V)
-  rule #defineandsetlocallist_((N:Id, Ns:IdList), (V:Expression, Vs:ExpressionList)) => #definelocal(Id2String(N)) ~> #varsetlocal(Id2String(N), V) ~> #defineandsetlocallist_(Ns, Vs)
-  rule #defineandsetlocallist_(.IdList, V:ExpressionList) => .
-  rule #defineandsetlocallist_((N:Id, Ns:IdList), .ExpressionList) => #defineandsetlocallist_((N:Id, Ns:IdList), (nil, .ExpressionList))
+  syntax FunctionCall ::= "#defineAndSetLocalList" "(" IdList "," NeExpressionList ")"
+                        | "#defineAndSetLocalList_f0" "(" IdList ")"
+                        | "#defineAndSetLocalList_" "(" IdList "," ExpressionList ")"
+  rule local N:IdList = V:NeExpressionList => #defineAndSetLocalList(N, V)
+  rule #defineAndSetLocalList(N, V) => #derefListne(V) ~> #defineAndSetLocalList_f0(N)
+  rule V:ExpressionList ~> #defineAndSetLocalList_f0(N:IdList) => #defineAndSetLocalList_(N, V)
+  rule #defineAndSetLocalList_((N:Id, Ns:IdList), (V:Expression, Vs:ExpressionList)) => #defineLocal(Id2String(N)) ~> #varSetlocal(Id2String(N), V) ~> #defineAndSetLocalList_(Ns, Vs)
+  rule #defineAndSetLocalList_(.IdList, V:ExpressionList) => .
+  rule #defineAndSetLocalList_((N:Id, Ns:IdList), .ExpressionList) => #defineAndSetLocalList_((N:Id, Ns:IdList), (nil, .ExpressionList))
 
   // variable get
   rule <k> Name:Id => V ...</k>
@@ -227,6 +247,9 @@ module LUA
        <env>... "..." |-> L:Int ...</env>
        <store>... L |-> V ...</store>
 
+  rule E:PrefixExpression [ K:Expression ] => #get(E, K)
+  rule (E:PrefixExpression . K:Id):Var => #get(E, Id2String(K))
+
   // builtin set
   syntax FunctionCall ::= "#set" "(" Expression "," Expression "," Expression ")" [strict]
   syntax FunctionCall ::= "#rawset" "(" Expression "," Expression "," Expression ")" [strict]
@@ -239,7 +262,9 @@ module LUA
   syntax FunctionCall ::= "#rawget" "(" Expression "," Expression ")" [strict]
   rule #get(T, N) => #rawget(T, N)
   rule <k> #rawget(Table<T:Int>, Name) => M:Map[Name] ...</k>
-       <heap>... T |-> M:Map ...</heap>
+       <heap>... T |-> M:Map ...</heap> when Name in keys(M)
+  rule <k> #rawget(Table<T:Int>, Name) => nil ...</k>
+       <heap>... T |-> M:Map ...</heap> when notBool(Name in keys(M))
 
   // builtin print
   syntax FunctionCall ::= "#print" "(" ExpressionList ")"
@@ -248,7 +273,7 @@ module LUA
                         | "#print_2f" "(" ")"
   rule #print_2(E:Expression, Es:ExpressionList) => #print_(#tostring(E)) ~> #print_(" ") ~> #print_2(Es)
   rule #print_2(.ExpressionList) => #print_("\n")
-  rule #print(L) => #dereflist(L) ~> #print_2f()
+  rule #print(L) => #derefList(L) ~> #print_2f()
   rule L:ExpressionList ~> #print_2f() => #print_2(L)
   rule <k> #print_(S:String) => . ...</k>
        <out>... . => ListItem(S) </out>
@@ -257,6 +282,7 @@ module LUA
   rule #tostring(S:String) => S
   rule #tostring(N:Float) => Int2String(Float2Int(N)) when N %Float 1.0 ==Float 0.0
   rule #tostring(N:Float) => Float2String(N) when N %Float 1.0 =/=Float 0.0
+  rule #tostring(nil) => "nil"
 
   // function call
   syntax FunctionCall ::= "#call" "(" FunctionRef "," ExpressionList ")"
@@ -268,11 +294,11 @@ module LUA
   rule <k> #call_(Func<L:Int>, Args:ExpressionList) => #pushFuncCall ~> #call_(M:FuncDef, Args) ~> #popFuncCall ...</k>
        <heap>... L |-> M:FuncDef ...</heap>
   rule #call_(FuncDef<(N:Id, Ns:ParamList), B:Block>, (Arg:Expression, Args:ExpressionList)) =>
-    #definelocal(Id2String(N)) ~> #varsetlocal(Id2String(N), Arg) ~> #call_(FuncDef<Ns, B>, Args)
+    #defineLocal(Id2String(N)) ~> #varSetlocal(Id2String(N), Arg) ~> #call_(FuncDef<Ns, B>, Args)
   rule #call_(FuncDef<N:Id, B:Block>, (Arg:Expression, Args:ExpressionList)) =>
-    #definelocal(Id2String(N)) ~> #varsetlocal(Id2String(N), Arg) ~> #call_(FuncDef<B>, Args)
+    #defineLocal(Id2String(N)) ~> #varSetlocal(Id2String(N), Arg) ~> #call_(FuncDef<B>, Args)
   rule #call_(FuncDef<(...):Varargs, B:Block>, Args:ExpressionList) =>
-    #definelocal("...") ~> #varsetlocal("...", Args:ExpressionList) ~> #call_(FuncDef<B>, .ExpressionList)
+    #defineLocal("...") ~> #varSetlocal("...", Args:ExpressionList) ~> #call_(FuncDef<B>, .ExpressionList)
   rule #call_(FuncDef<B:Block>, Args:ExpressionList) => B
 
   syntax KItem ::= "#pushFuncCall" | "#popFuncCall"
@@ -297,11 +323,26 @@ module LUA
   rule A:Float < B:Float => A <Float B
   rule A:Float == B:Float => A ==Float B
 
+  syntax FunctionCall ::= "#equal" "(" Expression "," Expression ")" [strict]
+                        | "#rawequal" "(" Expression "," Expression ")" [strict]
+  rule A:Literal == B:Literal => #equal(A, B)
+  rule #equal(A, B) => #rawequal(A, B)
+  rule #rawequal(A:Literal, B:Literal) => A ==K B
+
+  rule A:Literal ~= B:Literal => not (A == B)
+
+  syntax FunctionCall ::= "#len_" "(" TablePtr "," Expression ")" [strict]
+                        | "#len_f" "(" TablePtr "," Expression ")"
+  rule # L:TablePtr => #len_(L, 0)
+  rule #len_(L:TablePtr, Pos:Float) => #get(L, Pos +Float 1) == nil ~> #len_f(L, Pos)
+  rule true ~> #len_f(L:TablePtr, Pos:Float) => Pos
+  rule false ~> #len_f(L:TablePtr, Pos:Float) => #len_(L, Pos +Float 1)
+
   // return
   syntax KItem ::= "#return_f1"
   rule R:ReturnStatement ~> S:Statement => R
   rule R:ReturnStatement ; => R
-  rule return E:ExpressionList ~> #popFuncCall => #dereflist(E) ~> #return_f1
+  rule return E:ExpressionList ~> #popFuncCall => #derefList(E) ~> #return_f1
   rule E:ExpressionList ~> #return_f1 => #popFuncCall ~> E
 
   // if
