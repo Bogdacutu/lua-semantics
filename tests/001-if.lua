@@ -1,3 +1,31 @@
+#! /usr/bin/lua
+--
+-- lua-TestMore : <http://fperrad.github.com/lua-TestMore/>
+--
+-- Copyright (C) 2009-2014, Perrad Francois
+--
+-- This code is licensed under the terms of the MIT/X11 license,
+-- like Lua itself.
+--
+
+--[[
+
+=head1 Lua if statement
+
+=head2 Synopsis
+
+    % prove 001-if.t
+
+=head2 Description
+
+See "Lua 5.3 Reference Manual", section 3.3.4 "Control Structures",
+L<http://www.lua.org/manual/5.3/manual.html#3.3.4>.
+
+See "Programming in Lua", section 4.3 "Control Structures".
+
+=cut
+
+]]
 
 print("1..6")
 
@@ -50,3 +78,10 @@ elseif a == b then
 else
     print("ok 6")
 end
+
+-- Local Variables:
+--   mode: lua
+--   lua-indent-level: 4
+--   fill-column: 100
+-- End:
+-- vim: ft=lua expandtab shiftwidth=4:

@@ -1,3 +1,32 @@
+#! /usr/bin/lua
+--
+-- lua-TestMore : <http://fperrad.github.com/lua-TestMore/>
+--
+-- Copyright (C) 2009-2015, Perrad Francois
+--
+-- This code is licensed under the terms of the MIT/X11 license,
+-- like Lua itself.
+--
+
+--[[
+
+=head1 Lua for statement
+
+=head2 Synopsis
+
+    % prove 014-fornum.t
+
+=head2 Description
+
+See "Lua 5.3 Reference Manual", section 3.3.5 "For Statement",
+L<http://www.lua.org/manual/5.3/manual.html#3.3.5>.
+
+See "Programming in Lua", section 4.3 "Control Structures".
+
+=cut
+
+--]]
+
 print("1..36")
 
 for i = 1.0, 3.0, 0.5 do
@@ -107,3 +136,10 @@ do
         print("#", v)
     end
 end
+
+-- Local Variables:
+--   mode: lua
+--   lua-indent-level: 4
+--   fill-column: 100
+-- End:
+-- vim: ft=lua expandtab shiftwidth=4:

@@ -1,3 +1,32 @@
+#! /usr/bin/lua
+--
+-- lua-TestMore : <http://fperrad.github.com/lua-TestMore/>
+--
+-- Copyright (C) 2009-2015, Perrad Francois
+--
+-- This code is licensed under the terms of the MIT/X11 license,
+-- like Lua itself.
+--
+
+--[[
+
+=head1 Lua while statement
+
+=head2 Synopsis
+
+    % prove 011-while.t
+
+=head2 Description
+
+See "Lua 5.3 Reference Manual", section 3.3.4 "Control Structures",
+L<http://www.lua.org/manual/5.2/manual.html#3.3.4>.
+
+See "Programming in Lua", section 4.3 "Control Structures".
+
+=cut
+
+]]
+
 print("1..11")
 
 do
@@ -26,7 +55,7 @@ do
     local a = {"ok 5 - with break", "ok 6", "stop", "more"}
     local i = 1
     while a[i] do
-        if a[i] == "stop" then break end
+        if a[i] == 'stop' then break end
         print(a[i])
         i = i + 1
     end
@@ -50,3 +79,10 @@ do
         print("not ok 11 - " .. i)
     end
 end
+
+-- Local Variables:
+--   mode: lua
+--   lua-indent-level: 4
+--   fill-column: 100
+-- End:
+-- vim: ft=lua expandtab shiftwidth=4:

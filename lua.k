@@ -9,7 +9,7 @@ module LUA-SYNTAX
   syntax Block ::= Statements ReturnStatement
                  | Statements
 
-  syntax Statement ::= ";"
+  syntax Statement ::= ";" [klabel(SemicolonStmt)]
                      | VarList "=" NeExpressionList
                      | FunctionCall
                      | "break"
@@ -51,7 +51,7 @@ module LUA-SYNTAX
                       | "~" Expression [left, strict]
                       > Expression "*" Expression [left, strict]
                       | Expression "/" Expression [left, strict]
-                      | Expression "//" Expression [left, strict]
+                      | Expression "/ /" Expression [left, strict] // luakast turns '//' into '/ /'
                       | Expression "%" Expression [left, strict]
                       > Expression "+" Expression [left, strict]
                       | Expression "-" Expression [left, strict]
@@ -77,6 +77,7 @@ module LUA-SYNTAX
                             | "(" Expression ")" [bracket]
 
   syntax FunctionCall ::= FunctionRef "(" ExpressionList ")"
+                        | FunctionRef String
   syntax FunctionRef ::= PrefixExpression
                        | PrefixExpression ":" Id
 
@@ -312,8 +313,8 @@ module LUA
   // builtin set
   syntax FunctionCall ::= "#set" "(" Expression "," Expression "," Expression ")" [strict]
   syntax FunctionCall ::= "#rawset" "(" Expression "," Expression "," Expression ")" [strict]
-  rule #set(T, N, V) => #rawset(T, N, V)
-  rule <k> #rawset(Table<T:Int>, Name, Value) => . ...</k>
+  rule #set(T:TablePtr, N:Literal, V:Literal) => #rawset(T, N, V)
+  rule <k> #rawset(Table<T:Int>, Name:Literal, Value:Literal) => . ...</k>
        <heap>... T |-> (M:Map => M[Name <- Value]) ...</heap>
 
   // builtin get
@@ -346,14 +347,14 @@ module LUA
   // builtin next
   syntax FunctionCall ::= "#next" "(" ExpressionList ")"
                         | "#next_" "(" Expression "," Expression ")" [strict]
-                        | "#next_" "(" Map "," Literal ")"
+                        | "#next_" "(" TablePtr "," Set "," Literal ")"
   rule #next(T:Expression, I:Expression, Rest:ExpressionList) => #next_(T, I)
-  rule <k> #next_(Table<L:Int>, I:Literal) => #next_(M:Map, I:Literal) ...</k>
+  rule <k> #next_(Table<L:Int>, I:Literal) => #next_(Table<L:Int>, keys(M:Map), I:Literal) ...</k>
        <heap>... L |-> M:Map ...</heap>
-  rule #next_((I:Literal |-> Iv:Literal) Rest:Map, nil) => I, Iv, .ExpressionList
-  rule #next_((I:Literal |-> Iv:Literal) Rest:Map, J:Literal) => #next_(Rest:Map, J) when I =/=K J andBool J =/=K nil
-  rule #next_((I:Literal |-> Iv:Literal) Rest:Map, I:Literal) => #next_(Rest:Map, nil) when I =/=K nil
-  rule #next_(.Map, I:Literal) => nil
+  rule #next_(T:TablePtr, SetItem(I:Literal) Rest:Set, nil) => #evalList(I, #rawget(T, I))
+  rule #next_(T:TablePtr, SetItem(I:Literal) Rest:Set, J:Literal) => #next_(T, Rest:Set, J) when I =/=K J andBool J =/=K nil
+  rule #next_(T:TablePtr, SetItem(I:Literal) Rest:Set, I:Literal) => #next_(T, Rest:Set, nil) when I =/=K nil
+  rule #next_(T:TablePtr, .Set, I:Literal) => nil
 
   // function call
   syntax FunctionCall ::= "#call" "(" FunctionRef "," ExpressionList ")"
@@ -422,6 +423,8 @@ module LUA
   rule A:Float - B:Float => A -Float B
   rule A:Float * B:Float => A *Float B
   rule A:Float / B:Float => A /Float B
+
+  rule - A:Float => 0 -Float A
 
   syntax FunctionCall ::= "#concat" "(" Expression "," Expression ")" [strict]
                         | "#concat_" "(" Expression "," Expression ")" [strict]
@@ -521,7 +524,7 @@ module LUA
   rule (F:Expression, (S:Expression, (Var:Expression, Rest:ExpressionList))) ~> #ifor_step1(N:IdList, B:Block) =>
     #ifor_step2(N, F, S, Var, B)
   rule #ifor_step2(N:IdList, F:Expression, S:Expression, Var:Expression, B:Block) =>
-    #evalList(S, Var) ~> #call_f2(F:Expression) ~> #ifor_step3(N, F, S, B)
+    #evalList(S, Var, .ExpressionList) ~> #call_f2(F:Expression) ~> #ifor_step3(N, F, S, B)
   rule Var:Expression, Vars:ExpressionList ~> #ifor_step3((N:Id, Ns:IdList), F:Expression, S:Expression, B:Block) =>
     local N = Var:Expression ~> #defineAndSetLocalList_(Ns, Vars:ExpressionList) ~> N == nil ~>
     #ifor_step4((N:Id, Ns:IdList), F:Expression, S:Expression, Var:Expression, B:Block)

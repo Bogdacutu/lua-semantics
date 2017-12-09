@@ -1,3 +1,29 @@
+#! /usr/bin/lua
+--
+-- lua-TestMore : <http://fperrad.github.com/lua-TestMore/>
+--
+-- Copyright (C) 2009, Perrad Francois
+--
+-- This code is licensed under the terms of the MIT/X11 license,
+-- like Lua itself.
+--
+
+--[[
+
+=head1 Lua table
+
+=head2 Synopsis
+
+    % prove 002-table.t
+
+=head2 Description
+
+See "Programming in Lua", section 2.5 "Tables".
+
+=cut
+
+]]
+
 print("1..8")
 
 a = {"ok 1", "ok 2", "ok 3"}
@@ -17,7 +43,7 @@ else
 end
 
 t = {a=10, b=100}
-if t["a"] == 10 then
+if t['a'] == 10 then
     print("ok 6")
 else
     print("not ok 6")
@@ -32,3 +58,10 @@ if t.z == nil then
 else
     print("not ok 8")
 end
+
+-- Local Variables:
+--   mode: lua
+--   lua-indent-level: 4
+--   fill-column: 100
+-- End:
+-- vim: ft=lua expandtab shiftwidth=4:
