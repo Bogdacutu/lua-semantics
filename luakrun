@@ -1,4 +1,36 @@
-#!/bin/sh
+#!/bin/bash
 SCRIPT=$(readlink -f "$0")
 SCRIPTPATH=$(dirname "$SCRIPT")
-krun --parser "$SCRIPTPATH/luakast" "$@"
+
+LUAFILE=$(mktemp)
+
+function include_file {
+  (
+    echo "-- $1"
+    echo "do"
+    if head -n1 "$1" | grep -q "^#!"; then
+      tail -n+2 "$1"
+    else
+      cat "$1"
+    fi
+    echo "end"
+    echo
+  ) >> $LUAFILE
+}
+
+include_file "$SCRIPTPATH/lib/builtins.lua"
+
+while [ "$1" = "--lib" ]; do
+  # echo "Prepending library $2..."
+  include_file "$SCRIPTPATH/lib/$2.lua"
+  shift 2
+done
+
+include_file "${@: -1}"
+
+krun --parser "$SCRIPTPATH/luakast" "${@:1:$(($#-1))}" "$LUAFILE"
+KRUN_EXIT=$?
+
+rm $LUAFILE
+
+exit "$KRUN_EXIT"

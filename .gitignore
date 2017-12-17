@@ -1,3 +1,4 @@
 lua-kompiled
 node_modules
 package-lock.json
+hs_err_*.log
