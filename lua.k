@@ -351,7 +351,11 @@ module LUA
 
   syntax FunctionCall ::= #rawset(Expression, Expression, Expression) [strict]
   rule <k> #rawset(Table<T:Int>, N:Value, V:Value) => . ...</k>
-       <heap>... T |-> (M:Map => M[N <- V]) ...</heap>
+       <heap>... T |-> (M:Map => M[N <- V]) ...</heap> when notBool (N ==K nil orBool isFloat(N))
+  rule <k> #rawset(Table<T:Int>, N:Float, V:Value) => . ...</k>
+       <heap>... T |-> (M:Map => M[N <- V]) ...</heap> when notBool isNaN(N)
+  rule #rawset(T:TablePtr, nil, V:Value) => #error("table index is nil")
+  rule #rawset(T:TablePtr, N:Float, V:Value) => #error("table index is NaN") when isNaN(N)
   rule #rawset(T:Value, N:Value, V:Value) => #error("attempt to index") when notBool isTablePtr(T)
 
   // table get
@@ -363,7 +367,8 @@ module LUA
        <heap>... T |-> M:Map ...</heap> when N in keys(M)
   rule <k> #rawget(Table<T:Int>, N:Value) => nil ...</k>
        <heap>... T |-> M:Map ...</heap> when notBool(N in keys(M))
-  rule #rawget(T:Value, N:Value) => #error("attempt to index") when notBool isTablePtr(T)
+  rule #rawget(S:String, N:Value) => nil
+  rule #rawget(T:Value, N:Value) => #error("attempt to index") when notBool (isTablePtr(T) orBool isString(T))
 
   rule E:PrefixExpression [ K:Expression ] => #get(E, K)
   rule (E:PrefixExpression . K:Id):Var => #get(E, Id2String(K))
@@ -565,7 +570,9 @@ module LUA
 
   syntax FunctionCall ::= #checkCompareError(Value, Value)
   rule #checkCompareError(A:Float, B:Float) => .
-  rule #checkCompareError(A:Value, B:Value) => #compareError(A, B) when notBool(isFloat(A) andBool isFloat(B))
+  rule #checkCompareError(A:String, B:String) => .
+  rule #checkCompareError(A:Value, B:Value) => #compareError(A, B)
+    when notBool((isFloat(A) andBool isFloat(B)) orBool (isString(A) andBool isString(B)))
 
 
 
@@ -671,6 +678,7 @@ module LUA
   rule A:Expression < B:Expression => #lt(#eval1(A), #eval1(B))
   rule #lt(A:Value, B:Value) => #checkCompareError(A, B) ~> #ltImpl(A, B)
   rule #ltImpl(A:Float, B:Float) => A <Float B    // >
+  rule #ltImpl(A:String, B:String) => A <String B    // >
 
   // greater than
   rule A:Expression > B:Expression => not (A <= B)
@@ -681,6 +689,7 @@ module LUA
   rule A:Expression <= B:Expression => #le(#eval1(A), #eval1(B))
   rule #le(A:Value, B:Value) => #checkCompareError(A, B) ~> #leImpl(A, B)
   rule #leImpl(A:Float, B:Float) => A <=Float B
+  rule #leImpl(A:String, B:String) => A <=String B
 
   // greater than or equal
   rule A:Expression >= B:Expression => not (A < B)    // >
