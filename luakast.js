@@ -15,11 +15,17 @@ var parser = luaparse.parse(source, {
 	wait: true
 });
 
+var prevToken;
 var token = parser.lex();
 var script = "";
 while (token.type != luaparse.tokenTypes.EOF) {
 	if (token.type == luaparse.tokenTypes.Punctuator && token.value == "//") {
-		script += "/ /";
+		var prevTokenStr = source.substring(prevToken.range[0], prevToken.range[1]);
+		if (prevToken.type == luaparse.tokenTypes.NumericLiteral && prevTokenStr.indexOf(".") < 0 && prevTokenStr.indexOf("e") < 0) {
+			script += "i/ /";
+		} else {
+			script += "/ /";
+		}
 	} else if (token.type == luaparse.tokenTypes.StringLiteral) {
 		script += JSON.stringify(token.value);
 	} else {
@@ -27,6 +33,7 @@ while (token.type != luaparse.tokenTypes.EOF) {
 	}
 	script += " ";
 
+	prevToken = token;
 	token = parser.lex();
 }
 

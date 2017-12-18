@@ -53,6 +53,7 @@ module LUA-SYNTAX
                       > Expression "*" Expression [left]
                       | Expression "/" Expression [left]
                       | Expression "/ /" Expression [left] // luakast turns '//' into '/ /'
+                      | Expression "i/ /" Expression [left] // luakast turns '[Int] //' into 'i/ /'
                       | Expression "%" Expression [left]
                       > Expression "+" Expression [left]
                       | Expression "-" Expression [left]
@@ -136,9 +137,14 @@ module LUA
   syntax ExpressionList ::= ValueList
   syntax KResult ::= Value | ValueList | Int
 
+
+  syntax Float ::= IntToFloat(Int) [function]
+  rule IntToFloat(N:Int) => Int2Float(N, 53, 11)
+
   syntax K ::= "#freshint" "(" ")"
   rule <k> #freshint() => V ...</k>
        <freshint> V => V +Int 1 </freshint>
+
 
   // statements
   rule S:Statement Ss:Statements => S ~> Ss
@@ -486,6 +492,35 @@ module LUA
   syntax K ::= #concatError(Value) [function]
   rule #concatError(V:Value) => #error("attempt to concatenate a " .. #type(V) .. " value")
 
+  syntax K ::= #compareError(Value, Value) [function]
+  rule #compareError(A:Value, B:Value) => #error("attempt to compare two " .. #type(A) .. " values")
+    when #type(A) ==K #type(B)
+  rule #compareError(A:Value, B:Value) => #error("attempt to compare " .. #type(A) .. " with " .. #type(B))
+    when #type(A) =/=K #type(B)
+
+
+
+  // external process helper
+  syntax FunctionCall ::= #callHelper(ValueList)
+                        | #callHelperImpl(String, ValueList)
+                        | "#callHelperExit" "(" ")"
+  rule #callHelper(V:ValueList) => #callHelperImpl("nodejs\x01luahelper.js", V:ValueList)
+  rule #callHelperImpl(S:String, (V:String, Vs:ValueList)) =>
+    #callHelperImpl(S:String +String "\x01" +String V:String, Vs:ValueList)
+  rule #callHelperImpl(S:String, .ValueList) => #system(S) ~> #callHelperExit()
+  rule #systemResult(E:Int, S:String, W:String) ~> #callHelperExit() => S
+
+  syntax FunctionCall ::= #tonumber(ExpressionList) [strict]
+                        | #tonumberImpl(Value) [function]
+                        | #tonumberImplString(Expression) [strict]
+  rule #tonumber(V:Value, Vs:ValueList) => #tonumberImpl(V:Value)
+  rule #tonumber(.ValueList) => nil
+  rule #tonumberImpl(F:Float) => F
+  rule #tonumberImpl(S:String) => #tonumberImplString(#callHelper("tonumber", S))
+  rule #tonumberImplString(S:String) => String2Float(S) when S =/=String ""
+  rule #tonumberImplString("") => nil
+  rule #tonumberImpl(V:Value) => nil when notBool (isFloat(V) orBool isString(V))
+
 
 
   // type coercion
@@ -495,14 +530,18 @@ module LUA
   rule #toboolean(.ValueList) => false
   rule #tobooleanImpl(false) => false
   rule #tobooleanImpl(nil) => false
-  rule #tobooleanImpl(V:Value) => true when notBool(V ==K false orBool V ==K nil)
+  rule #tobooleanImpl(V:Value) => true when notBool (V ==K false orBool V ==K nil)
 
   syntax FunctionCall ::= #arithmeticParam(ExpressionList) [strict]
                         | #arithmeticParamImpl(Value) [function]
+                        | #arithmeticParamImplString(Expression) [strict]
   rule #arithmeticParam(V:Value, Vs:ValueList) => #arithmeticParamImpl(V:Value)
   rule #arithmeticParam(.ValueList) => #arithmeticError(nil)
   rule #arithmeticParamImpl(F:Float) => F
-  rule #arithmeticParamImpl(V:Value) => #arithmeticError(V) when notBool isFloat(V)
+  rule #arithmeticParamImpl(S:String) => #arithmeticParamImplString(#tonumber(S))
+  rule #arithmeticParamImplString(nil) => #arithmeticError("")
+  rule #arithmeticParamImplString(F:Float) => F
+  rule #arithmeticParamImpl(V:Value) => #arithmeticError(V) when notBool (isFloat(V) orBool isString(V))
 
   syntax FunctionCall ::= #concatParam(ExpressionList) [strict]
                         | #concatParamImpl(Value) [function]
@@ -514,17 +553,19 @@ module LUA
 
   syntax FunctionCall ::= #bitwiseParam(ExpressionList) [strict]
                         | #bitwiseParamImpl(Value) [function]
+                        | #bitwiseParamImplString(Expression) [strict]
   rule #bitwiseParam(V:Value, Vs:ValueList) => #bitwiseParamImpl(V:Value)
   rule #bitwiseParam(.ValueList) => #bitwiseOpError(nil)
-  rule #bitwiseParamImpl(F:Float) => F
-  rule #bitwiseParamImpl(V:Value) => #bitwiseOpError(V) when notBool isFloat(V)
+  rule #bitwiseParamImpl(F:Float) => floorFloat(F) when F %Float 1.0 ==Float 0.0
+  rule #bitwiseParamImpl(F:Float) => #error("number has no integer representation") when F %Float 1.0 =/=Float 0.0
+  rule #bitwiseParamImpl(S:String) => #bitwiseParamImplString(#tonumber(S))
+  rule #bitwiseParamImplString(nil) => #bitwiseOpError("")
+  rule #bitwiseParamImplString(F:Float) => F
+  rule #bitwiseParamImpl(V:Value) => #bitwiseOpError(V) when notBool (isFloat(V) orBool isString(V))
 
   syntax FunctionCall ::= #checkCompareError(Value, Value)
   rule #checkCompareError(A:Float, B:Float) => .
-  rule #checkCompareError(A:Value, B:Value) => #error("attempt to compare two " .. #type(A) .. " values")
-    when notBool(isFloat(A) andBool isFloat(B)) andBool (#type(A) ==K #type(B))
-  rule #checkCompareError(A:Value, B:Value) => #error("attempt to compare " .. #type(A) .. " with " .. #type(B))
-    when notBool(isFloat(A) andBool isFloat(B)) andBool (#type(A) =/=K #type(B))
+  rule #checkCompareError(A:Value, B:Value) => #compareError(A, B) when notBool(isFloat(A) andBool isFloat(B))
 
 
 
@@ -544,17 +585,18 @@ module LUA
   rule #len(L:TablePtr, Pos:Float) => #rawget(L, Pos) == nil ~> #len(L, Pos +Float 1.0)
   rule true ~> #len(L:TablePtr, Pos:Float) => Pos -Float 2.0
   rule false ~> #len(L:TablePtr, Pos:Float) => #len(L:TablePtr, Pos:Float)
-  rule #len(S:String, Pos:Float) => Int2Float(lengthString(S), 53, 11)
+  rule #len(S:String, Pos:Float) => IntToFloat(lengthString(S))
   rule #len(E:Value, Pos:Float) => #lengthError(E) when notBool(isTablePtr(E) orBool isString(E))
 
   // unary minus
   syntax FunctionCall ::= #unm(Expression) [strict]
   rule - E:Expression => #unm(#arithmeticParam(E))
-  rule #unm(E:Float) => 0.0 -Float E
+  rule #unm(E:Float) => --Float E
 
   // bitwise not
   syntax FunctionCall ::= #bnot(Expression) [strict]
   rule ~ E:Expression => #bnot(#bitwiseParam(E))
+  rule #bnot(E:Float) => IntToFloat(~Int Float2Int(E))
 
   // multiplication
   syntax FunctionCall ::= #mul(Expression, Expression) [strict]
@@ -571,10 +613,17 @@ module LUA
   rule A:Expression / / B:Expression => #idiv(#arithmeticParam(A), #arithmeticParam(B))
   rule #idiv(A:Float, B:Float) => floorFloat(A /Float B)
 
+  // integer division with left param as integer constant
+  syntax FunctionCall ::= #iidiv(Expression, Expression) [strict]
+  rule A:Expression i/ / B:Expression => #iidiv(#arithmeticParam(A), #arithmeticParam(B))
+  rule #iidiv(A:Float, B:Float) => #idiv(A, B) when B =/=Float 0.0
+  rule #iidiv(A:Float, 0.0) => #error("attempt to divide by zero")
+
   // modulo
   syntax FunctionCall ::= #mod(Expression, Expression) [strict]
   rule A:Expression % B:Expression => #mod(#arithmeticParam(A), #arithmeticParam(B))
-  rule #mod(A:Float, B:Float) => A %Float B
+  rule #mod(A:Float, B:Float) => A -Float floorFloat(A /Float B) *Float B when B =/=Float 0.0
+  rule #mod(A:Float, 0.0) => #error("attempt to perform 'n%0'")
 
   // addition
   syntax FunctionCall ::= #add(Expression, Expression) [strict]
@@ -594,22 +643,27 @@ module LUA
   // bitwise left shift
   syntax FunctionCall ::= #blshift(Expression, Expression) [strict]
   rule A:Expression << B:Expression => #blshift(#bitwiseParam(A), #bitwiseParam(B))
+  rule #blshift(A:Float, B:Float) => IntToFloat(Float2Int(A) <<Int Float2Int(B))    // >
 
   // bitwise right shift
   syntax FunctionCall ::= #brshift(Expression, Expression) [strict]
   rule A:Expression >> B:Expression => #brshift(#bitwiseParam(A), #bitwiseParam(B))
+  rule #brshift(A:Float, B:Float) => IntToFloat(Float2Int(A) >>Int Float2Int(B))
 
   // bitwise and
   syntax FunctionCall ::= #band(Expression, Expression) [strict]
   rule A:Expression & B:Expression => #band(#bitwiseParam(A), #bitwiseParam(B))
+  rule #band(A:Float, B:Float) => IntToFloat(Float2Int(A) &Int Float2Int(B))
 
   // bitwise xor
   syntax FunctionCall ::= #bxor(Expression, Expression) [strict]
   rule A:Expression ~ B:Expression => #bxor(#bitwiseParam(A), #bitwiseParam(B))
+  rule #bxor(A:Float, B:Float) => IntToFloat(Float2Int(A) xorInt Float2Int(B))
 
   // bitwise or
   syntax FunctionCall ::= #bor(Expression, Expression) [strict]
   rule A:Expression | B:Expression => #bor(#bitwiseParam(A), #bitwiseParam(B))
+  rule #bor(A:Float, B:Float) => IntToFloat(Float2Int(A) |Int Float2Int(B))
 
   // lower than
   syntax FunctionCall ::= #lt(Expression, Expression) [strict]

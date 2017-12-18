@@ -60,3 +60,7 @@ end
 function is(a, b, name)
   ok(a == b, name)
 end
+
+function type_ok(a, b, name)
+  ok(type(a) == b, name)
+end
