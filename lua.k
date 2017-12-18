@@ -111,12 +111,14 @@ module LUA
 
   configuration <T>
                   <k>
-                    local _ENV = {}
-                    ~> (_G = _ENV):Statement
+                    local _ENV = { string = {} } ~> (_G = _ENV):Statement
 
                     // builtin functions
                     ~> (print = function(...) #print(...) .Statements end):Statement
                     ~> (next = function(t, i) .Statements return #next(t, i) end):Statement
+                    ~> (type = function(o) .Statements return #typeFunc(o) end):Statement
+                    ~> (error = function(m) .Statements return #error(m) end):Statement
+                    ~> (pcall = function(f, ...) .Statements return #pcall(f, ...) end):Statement
 
                     ~> $PGM:Statements
                   </k>
@@ -126,6 +128,7 @@ module LUA
                   <fstack> .List </fstack>
                   <out stream="stdout"> .List </out>
                   <freshint> 0 </freshint>
+                  <error> . </error>
                 </T>
 
   syntax Value ::= TablePtr | FuncPtr
@@ -142,6 +145,7 @@ module LUA
   rule .Statements => .
   rule S:Statements R:ReturnStatement => S ~> R
   rule E:ExpressionList ~> S:Statements => S // throw away unused results
+  rule (;):Statement => .
 
   // tables
   syntax TablePtr ::= "Table" "<" Int ">"
@@ -228,8 +232,11 @@ module LUA
                         | #callEntry(Expression, ExpressionList) [strict]
                         | #callEntry(FuncDef, ValueList)
                         | #callImpl(FuncDef, ValueList)
+
   rule F:FunctionRef(Args:ValueList) => #call(F, Args)
   rule F:FunctionRef() => #call(F, .ExpressionList)
+  rule F:FunctionRef S:String => #call(F, (S, .ValueList))
+
   rule #call(E:PrefixExpression : Es:Id, Args:ValueList) => #call((E . Es), #eval(#eval1(E), Args))
   rule #call(E:PrefixExpression, Args:ValueList) => #callEntry(E, Args)
 
@@ -245,7 +252,10 @@ module LUA
     local N = Arg ~> #callImpl(FuncDef<Ns, B, Env>, Args)
   rule #callImpl(FuncDef<N:Id, B:Block, Env:Map>, (Arg:Value, Args:ValueList)) =>
     local N = Arg ~> #callImpl(FuncDef<B, Env>, Args)
-  rule <k> #callImpl(FuncDef<(...):Varargs, B:Block, Env:Map>, Args:ValueList) => #callImpl(FuncDef<B, Env>, .ValueList) ...</k>
+  rule #callImpl(FuncDef<N:ParamList, B:Block, Env:Map>, .ValueList) =>
+    #callImpl(FuncDef<B, Env>, .ValueList)
+  rule <k> #callImpl(FuncDef<(...):Varargs, B:Block, Env:Map>, Args:ValueList) =>
+             #callImpl(FuncDef<B, Env>, .ValueList) ...</k>
        <env>... "..." |-> L:Int ...</env>
        <store>... L |-> (_ => Args) ...</store>
   rule #callImpl(FuncDef<B:Block, Env:Map>, Args:ValueList) => B
@@ -255,7 +265,7 @@ module LUA
        <env> _ => M:Map </env>
 
   syntax StackFrame ::= "StackFrame" "<" FrameType "," Map "," K ">"
-  syntax FrameType ::= "CallFrame" | "LoopFrame" | "ScopeFrame"
+  syntax FrameType ::= "CallFrame" | "LoopFrame" | "ScopeFrame" | "CatchFrame"
   syntax K ::= #enter(FrameType, K)
   rule <k> #enter(T:FrameType, B) ~> Rest => B </k>
        <env> M </env>
@@ -285,6 +295,7 @@ module LUA
   rule #checkValidReturn(CallFrame, LoopFrame) => true
   rule #checkValidReturn(CallFrame, ScopeFrame) => true
   rule #checkValidReturn(LoopFrame, ScopeFrame) => true
+  rule #checkValidReturn(CatchFrame, _) => true
 
   rule R:ReturnStatement ; => R
   rule return E:ExpressionList => #return(CallFrame, E:ExpressionList)
@@ -305,7 +316,8 @@ module LUA
   // variable assignment
   syntax K ::= #assignList(VarList, ExpressionList) [strict(2), function]
   rule V:VarList = E:ValueList => #assignList(V:VarList, E:ValueList)
-  rule #assignList((V:Var, Vs:VarList), (E:Value, Es:ValueList)) => #assign(V:Var, E:Value) ~> #assignList(Vs:VarList, Es:ValueList)
+  rule #assignList((V:Var, Vs:VarList), (E:Value, Es:ValueList)) =>
+    #assign(V:Var, E:Value) ~> #assignList(Vs:VarList, Es:ValueList)
   rule #assignList(.VarList, _) => .
 
   syntax K ::= #assign(Var, Expression) [strict(2)]
@@ -329,21 +341,23 @@ module LUA
 
   // table set
   syntax FunctionCall ::= #set(Expression, Expression, Expression) [strict]
-  rule #set(T:TablePtr, K:Value, V:Value) => #rawset(T, K, V)
+  rule #set(T:Value, K:Value, V:Value) => #rawset(T, K, V)
 
   syntax FunctionCall ::= #rawset(Expression, Expression, Expression) [strict]
   rule <k> #rawset(Table<T:Int>, N:Value, V:Value) => . ...</k>
        <heap>... T |-> (M:Map => M[N <- V]) ...</heap>
+  rule #rawset(T:Value, N:Value, V:Value) => #error("attempt to index") when notBool isTablePtr(T)
 
   // table get
   syntax FunctionCall ::= #get(Expression, Expression) [strict]
-  rule #get(T:TablePtr, K:Value) => #rawget(T, K)
+  rule #get(T:Value, K:Value) => #rawget(T, K)
 
   syntax FunctionCall ::= #rawget(Expression, Expression) [strict]
   rule <k> #rawget(Table<T:Int>, N:Value) => M:Map[N] ...</k>
        <heap>... T |-> M:Map ...</heap> when N in keys(M)
   rule <k> #rawget(Table<T:Int>, N:Value) => nil ...</k>
        <heap>... T |-> M:Map ...</heap> when notBool(N in keys(M))
+  rule #rawget(T:Value, N:Value) => #error("attempt to index") when notBool isTablePtr(T)
 
   rule E:PrefixExpression [ K:Expression ] => #get(E, K)
   rule (E:PrefixExpression . K:Id):Var => #get(E, Id2String(K))
@@ -392,23 +406,15 @@ module LUA
              | #iforStep(IdList, Expression, Expression, ExpressionList, Block) [strict(2, 3, 4)]
   rule #ifor(N:IdList, F:Value, S:Value, Var:Value, B:Block) =>
     #iforStep(N, F, S, #callEntry(F:Value, (S, Var, .ValueList)), B)
-  rule #iforStep((N:Id, Ns:IdList), F:Value, S:Value, (Var:Value, Vars:ExpressionList), B:Block) =>
-    local N = Var ~> local Ns = Vars ~> N == nil ~> #ifor((N:Id, Ns:IdList), F:Value, S:Value, Var:Value, B:Block)
-  rule #iforStep(N:IdList, F:Value, S:Value, .ExpressionList, B:Block) => break
+  rule #iforStep(N:IdList, F:Value, S:Value, (Var:Value, Vars:ValueList), B:Block) =>
+    local N ~> #assignList(N, (Var:Value, Vars:ValueList)) ~> Var == nil ~>
+    #ifor(N:IdList, F:Value, S:Value, Var:Value, B:Block)
+  rule #iforStep(N:IdList, F:Value, S:Value, .ValueList, B:Block) => break
   rule true ~> #ifor(N:IdList, F:Value, S:Value, Var:Value, B:Block) => break
   rule false ~> #ifor(N:IdList, F:Value, S:Value, Var:Value, B:Block) => B ~> #ifor(N, F, S, Var, B)
 
   rule for N:IdList in (F:Value, (S:Value, (Var:Value, Rest:ValueList))) do B:Block end =>
     #enter(LoopFrame, #ifor(N, F, S, Var, B))
-
-  // builtin toboolean (not exported)
-  syntax FunctionCall ::= #toboolean(ExpressionList) [strict]
-                        | #tobooleanImpl(Value) [function]
-  rule #toboolean(V:Value, Vs:ValueList) => #tobooleanImpl(V:Value)
-  rule #toboolean(.ValueList) => false
-  rule #tobooleanImpl(false) => false
-  rule #tobooleanImpl(nil) => false
-  rule #tobooleanImpl(V:Value) => true when notBool(V ==K false orBool V ==K nil)
 
   // builtin print
   syntax FunctionCall ::= #print(ExpressionList) [strict]
@@ -423,6 +429,8 @@ module LUA
   rule #tostring(S:String) => S
   rule #tostring(N:Float) => Int2String(Float2Int(N)) when N %Float 1.0 ==Float 0.0
   rule #tostring(N:Float) => Float2String(N) when N %Float 1.0 =/=Float 0.0
+  rule #tostring(true) => "true"
+  rule #tostring(false) => "false"
   rule #tostring(nil) => "nil"
 
   // builtin next
@@ -437,65 +445,194 @@ module LUA
   rule #nextImpl(T:TablePtr, ListItem(I:Value) Rest:List, I:Value) => #nextImpl(T, Rest, nil)
   rule #nextImpl(T:TablePtr, .List, I:Value) => nil
 
+  // builtin type
+  syntax FunctionCall ::= #type(Expression) [strict, function]
+                        | #typeFunc(Expression) [strict]
+  rule #typeFunc(V:Value) => #type(V)
+  rule #type(nil) => "nil"
+  rule #type(B:Bool) => "boolean"
+  rule #type(N:Float) => "number"
+  rule #type(S:String) => "string"
+  rule #type(F:FuncPtr) => "function"
+  rule #type(T:TablePtr) => "table"
+
+  // builtin error
+  syntax FunctionCall ::= #error(Expression) [strict]
+  rule <k> #error(V:Value) => #return(CatchFrame) ...</k>
+       <error> . => "[script]:1: " +String #tostring(V) </error>
+
+  // builtin pcall
+  syntax FunctionCall ::= #pcall(Expression, ExpressionList) [strict]
+  syntax K ::= "#pcallRet" "(" ")"
+  rule #pcall(F:Value, V:ValueList) =>
+    #enter(CatchFrame, #return(CatchFrame, #callEntry(F, V))) ~> #pcallRet()
+  rule <k> #pcallRet() => (false, Err:Value, .ValueList) ...</k>
+       <error> Err:Value => . </error>
+  rule <k> V:ValueList ~> #pcallRet() => (true, V:ValueList) ...</k>
+       <error> . </error>
+
+
+
+  // predefined error types
+  syntax K ::= #arithmeticError(Value) [function]
+  rule #arithmeticError(V:Value) => #error("attempt to perform arithmetic on a " .. #type(V) .. " value")
+
+  syntax K ::= #lengthError(Value) [function]
+  rule #lengthError(V:Value) => #error("attempt to get length of a " .. #type(V) .. " value")
+
+  syntax K ::= #bitwiseOpError(Value) [function]
+  rule #bitwiseOpError(V:Value) => #error("attempt to perform bitwise operation on a " .. #type(V) .. " value")
+
+  syntax K ::= #concatError(Value) [function]
+  rule #concatError(V:Value) => #error("attempt to concatenate a " .. #type(V) .. " value")
+
+
+
+  // type coercion
+  syntax FunctionCall ::= #toboolean(ExpressionList) [strict]
+                        | #tobooleanImpl(Value) [function]
+  rule #toboolean(V:Value, Vs:ValueList) => #tobooleanImpl(V:Value)
+  rule #toboolean(.ValueList) => false
+  rule #tobooleanImpl(false) => false
+  rule #tobooleanImpl(nil) => false
+  rule #tobooleanImpl(V:Value) => true when notBool(V ==K false orBool V ==K nil)
+
+  syntax FunctionCall ::= #arithmeticParam(ExpressionList) [strict]
+                        | #arithmeticParamImpl(Value) [function]
+  rule #arithmeticParam(V:Value, Vs:ValueList) => #arithmeticParamImpl(V:Value)
+  rule #arithmeticParam(.ValueList) => #arithmeticError(nil)
+  rule #arithmeticParamImpl(F:Float) => F
+  rule #arithmeticParamImpl(V:Value) => #arithmeticError(V) when notBool isFloat(V)
+
+  syntax FunctionCall ::= #concatParam(ExpressionList) [strict]
+                        | #concatParamImpl(Value) [function]
+  rule #concatParam(V:Value, Vs:ValueList) => #concatParamImpl(V:Value)
+  rule #concatParam(.ValueList) => #concatError(nil)
+  rule #concatParamImpl(S:String) => S
+  rule #concatParamImpl(F:Float) => #tostring(F)
+  rule #concatParamImpl(V:Value) => #concatError(V) when notBool(isString(V) orBool isFloat(V))
+
+  syntax FunctionCall ::= #bitwiseParam(ExpressionList) [strict]
+                        | #bitwiseParamImpl(Value) [function]
+  rule #bitwiseParam(V:Value, Vs:ValueList) => #bitwiseParamImpl(V:Value)
+  rule #bitwiseParam(.ValueList) => #bitwiseOpError(nil)
+  rule #bitwiseParamImpl(F:Float) => F
+  rule #bitwiseParamImpl(V:Value) => #bitwiseOpError(V) when notBool isFloat(V)
+
+  syntax FunctionCall ::= #checkCompareError(Value, Value)
+  rule #checkCompareError(A:Float, B:Float) => .
+  rule #checkCompareError(A:Value, B:Value) => #error("attempt to compare two " .. #type(A) .. " values")
+    when notBool(isFloat(A) andBool isFloat(B)) andBool (#type(A) ==K #type(B))
+  rule #checkCompareError(A:Value, B:Value) => #error("attempt to compare " .. #type(A) .. " with " .. #type(B))
+    when notBool(isFloat(A) andBool isFloat(B)) andBool (#type(A) =/=K #type(B))
+
+
+
+  // power
+  syntax FunctionCall ::= #pow(Expression, Expression) [strict]
+  rule A:Expression ^ B:Expression => #pow(#arithmeticParam(A), #arithmeticParam(B))
+  rule #pow(A:Float, B:Float) => A ^Float B
+
   // boolean not
   syntax FunctionCall ::= #not(Expression) [strict]
   rule not E:Expression => #not(#toboolean(E:Expression))
   rule #not(B:Bool) => notBool B
 
-  // table length
+  // length
   syntax FunctionCall ::= #len(Expression, Expression) [strict]
   rule # E:Expression => #len(#eval1(E), 1.0)
   rule #len(L:TablePtr, Pos:Float) => #rawget(L, Pos) == nil ~> #len(L, Pos +Float 1.0)
   rule true ~> #len(L:TablePtr, Pos:Float) => Pos -Float 2.0
   rule false ~> #len(L:TablePtr, Pos:Float) => #len(L:TablePtr, Pos:Float)
+  rule #len(S:String, Pos:Float) => Int2Float(lengthString(S), 53, 11)
+  rule #len(E:Value, Pos:Float) => #lengthError(E) when notBool(isTablePtr(E) orBool isString(E))
 
   // unary minus
   syntax FunctionCall ::= #unm(Expression) [strict]
-  rule - E:Expression => #unm(#eval1(E))
+  rule - E:Expression => #unm(#arithmeticParam(E))
   rule #unm(E:Float) => 0.0 -Float E
+
+  // bitwise not
+  syntax FunctionCall ::= #bnot(Expression) [strict]
+  rule ~ E:Expression => #bnot(#bitwiseParam(E))
 
   // multiplication
   syntax FunctionCall ::= #mul(Expression, Expression) [strict]
-  rule A:Expression * B:Expression => #mul(#eval1(A), #eval1(B))
+  rule A:Expression * B:Expression => #mul(#arithmeticParam(A), #arithmeticParam(B))
   rule #mul(A:Float, B:Float) => A *Float B
 
   // division
   syntax FunctionCall ::= #div(Expression, Expression) [strict]
-  rule A:Expression / B:Expression => #div(#eval1(A), #eval1(B))
+  rule A:Expression / B:Expression => #div(#arithmeticParam(A), #arithmeticParam(B))
   rule #div(A:Float, B:Float) => A /Float B
+
+  // integer division
+  syntax FunctionCall ::= #idiv(Expression, Expression) [strict]
+  rule A:Expression / / B:Expression => #idiv(#arithmeticParam(A), #arithmeticParam(B))
+  rule #idiv(A:Float, B:Float) => floorFloat(A /Float B)
+
+  // modulo
+  syntax FunctionCall ::= #mod(Expression, Expression) [strict]
+  rule A:Expression % B:Expression => #mod(#arithmeticParam(A), #arithmeticParam(B))
+  rule #mod(A:Float, B:Float) => A %Float B
 
   // addition
   syntax FunctionCall ::= #add(Expression, Expression) [strict]
-  rule A:Expression + B:Expression => #add(#eval1(A), #eval1(B))
+  rule A:Expression + B:Expression => #add(#arithmeticParam(A), #arithmeticParam(B))
   rule #add(A:Float, B:Float) => A +Float B
 
   // subtraction
   syntax FunctionCall ::= #sub(Expression, Expression) [strict]
-  rule A:Expression - B:Expression => #sub(#eval1(A), #eval1(B))
+  rule A:Expression - B:Expression => #sub(#arithmeticParam(A), #arithmeticParam(B))
   rule #sub(A:Float, B:Float) => A -Float B
 
   // concatenation
   syntax FunctionCall ::= #concat(Expression, Expression) [strict]
-  rule A:Expression .. B:Expression => #concat(#eval1(A), #eval1(B))
-  rule #concat(A:Float, B:Value) => #concat(#tostring(A), B)
-  rule #concat(A:Value, B:Float) => #concat(A, #tostring(B))
+  rule A:Expression .. B:Expression => #concat(#concatParam(A), #concatParam(B))
   rule #concat(A:String, B:String) => A +String B
+
+  // bitwise left shift
+  syntax FunctionCall ::= #blshift(Expression, Expression) [strict]
+  rule A:Expression << B:Expression => #blshift(#bitwiseParam(A), #bitwiseParam(B))
+
+  // bitwise right shift
+  syntax FunctionCall ::= #brshift(Expression, Expression) [strict]
+  rule A:Expression >> B:Expression => #brshift(#bitwiseParam(A), #bitwiseParam(B))
+
+  // bitwise and
+  syntax FunctionCall ::= #band(Expression, Expression) [strict]
+  rule A:Expression & B:Expression => #band(#bitwiseParam(A), #bitwiseParam(B))
+
+  // bitwise xor
+  syntax FunctionCall ::= #bxor(Expression, Expression) [strict]
+  rule A:Expression ~ B:Expression => #bxor(#bitwiseParam(A), #bitwiseParam(B))
+
+  // bitwise or
+  syntax FunctionCall ::= #bor(Expression, Expression) [strict]
+  rule A:Expression | B:Expression => #bor(#bitwiseParam(A), #bitwiseParam(B))
 
   // lower than
   syntax FunctionCall ::= #lt(Expression, Expression) [strict]
+                        | #ltImpl(Value, Value)
   rule A:Expression < B:Expression => #lt(#eval1(A), #eval1(B))
-  rule #lt(A:Float, B:Float) => A <Float B    // >
+  rule #lt(A:Value, B:Value) => #checkCompareError(A, B) ~> #ltImpl(A, B)
+  rule #ltImpl(A:Float, B:Float) => A <Float B    // >
 
   // greater than
   rule A:Expression > B:Expression => not (A <= B)
 
   // lower than or equal
   syntax FunctionCall ::= #le(Expression, Expression) [strict]
+                        | #leImpl(Value, Value)
   rule A:Expression <= B:Expression => #le(#eval1(A), #eval1(B))
-  rule #le(A:Float, B:Float) => A <=Float B
+  rule #le(A:Value, B:Value) => #checkCompareError(A, B) ~> #leImpl(A, B)
+  rule #leImpl(A:Float, B:Float) => A <=Float B
 
   // greater than or equal
   rule A:Expression >= B:Expression => not (A < B)    // >
+
+  // not equal
+  rule A:Expression ~= B:Expression => not (A == B)
 
   // equal
   syntax FunctionCall ::= #eq(Expression, Expression) [strict]
