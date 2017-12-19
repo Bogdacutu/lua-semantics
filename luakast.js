@@ -28,6 +28,8 @@ while (token.type != luaparse.tokenTypes.EOF) {
 		}
 	} else if (token.type == luaparse.tokenTypes.StringLiteral) {
 		script += JSON.stringify(token.value);
+	} else if (token.type == luaparse.tokenTypes.NilLiteral) {
+		script += "nil";
 	} else {
 		script += token.value;
 	}
@@ -37,7 +39,7 @@ while (token.type != luaparse.tokenTypes.EOF) {
 	token = parser.lex();
 }
 
-var tmpsrc = tmp.fileSync();
+var tmpsrc = tmp.fileSync({ keep: false });
 fs.writeFileSync(tmpsrc.name, script);
 var child = spawnSync("kast", [tmpsrc.name]);
 process.stdout.write(child.stdout);

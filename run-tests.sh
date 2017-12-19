@@ -5,7 +5,7 @@ echo
 
 for test in tests/*.lua; do
 	echo -n "Running ${test}... "
-	output=$(timeout 120s ./luakrun --lib Test.More --debug "$test")
+	output=$(timeout 480s ./luakrun --lib Test.More --debug "$test")
 	state=$(echo "$output" | tail -n1)
 	if echo "$output" | tail -n1 | grep "<k> \. </k>" | grep -q "<fstack> \.List </fstack>"; then
 		echo "OK"

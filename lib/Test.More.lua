@@ -57,10 +57,32 @@ function error_like(code, arg2, arg3, arg4)
   end
 end
 
+function error_is(code, arg2, arg3, arg4)
+  local params, pattern, name
+  if type(arg2) == "table" then
+    params = arg2
+    pattern = arg3
+    name = arg4
+  else
+    params = {}
+    pattern = arg2
+    name = arg3
+  end
+
+  return error_like(code, params, "^[^:]+:%d+: " .. pattern, name)
+end
+
 function is(a, b, name)
-  ok(a == b, name)
+  local pass = a == b
+  ok(pass, name)
+  if not pass then
+    diag(a)
+    diag(b)
+  end
 end
 
 function type_ok(a, b, name)
   ok(type(a) == b, name)
 end
+
+platform = { compat = true }
