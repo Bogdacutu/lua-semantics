@@ -54,7 +54,19 @@ local pairs = function(a)
 end
 _G.pairs = pairs
 
+
+
 require = function() end
+
+load = function()
+  return nil, "[script]:1: cannot evaluate strings"
+end
+
+
+
+math.pi = 3.141592653589793
+
+
 
 table.sort = function(t, cmp)
   if cmp == nil then

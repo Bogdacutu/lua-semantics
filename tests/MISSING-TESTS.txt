@@ -1,0 +1,21 @@
+107-thread      # coroutines not implemented
+108-userdata    # userdata not implemented
+203-lexico      # string literals not completely implemented
+204-grammar     # load not implemented
+214-coroutine   # coroutines not implemented
+223-iterator    # coroutines not implemented
+241-standalone  # popen not implemented
+242-luac        # popen not implemented
+
+301-basic
+303-package
+304-string
+305-utf8
+306-table
+307-math
+308-io
+309-os
+310-debug
+311-bit
+314-regex
+320-stdin

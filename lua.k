@@ -46,10 +46,10 @@ module LUA-SYNTAX
                       | "function" FuncBody
                       | Varargs
                       > Expression "^" Expression [right]
-                      > "not" Expression [left]
-                      | "#" Expression [left]
-                      | "-" Expression [left]
-                      | "~" Expression [left]
+                      > "not" Expression
+                      | "#" Expression
+                      | "-" Expression
+                      | "~" Expression
                       > Expression "*" Expression [left]
                       | Expression "/" Expression [left]
                       | Expression "/ /" Expression [left] // luakast turns '//' into '/ /'
@@ -113,7 +113,7 @@ module LUA
 
   configuration <T>
                   <k>
-                    local _ENV = { math = {}, string = {}, table = {} } ~> (_G = _ENV):Statement
+                    local _ENV = { math = {}, io = {}, string = {}, table = {} } ~> (_G = _ENV):Statement
 
                     // builtin functions
                     ~> (rawget = function(t, k) .Statements return #rawget(t, k) end):Statement
@@ -182,6 +182,10 @@ module LUA
     #set(T, Id2String(K), #eval1(V)) ~> #buildTable(T, Pos, Ls)
   rule #buildTable(T:TablePtr, Pos:Float, K:Id = V:Expression) =>
     #set(T, Id2String(K), #eval1(V)) ~> T
+  rule #buildTable(T:TablePtr, Pos:Float, [ K:Expression ] = V:Expression _:FieldSep Ls:FieldList) =>
+    #set(T, K, #eval1(V)) ~> #buildTable(T, Pos, Ls)
+  rule #buildTable(T:TablePtr, Pos:Float, [ K:Expression ] = V:Expression) =>
+    #set(T, K, #eval1(V)) ~> T
   rule #buildTableLast(T:TablePtr, Pos:Float, (V:Value, Vs:ValueList)) =>
     #set(T, Pos, V) ~> #buildTableLast(T, Pos +Float 1.0, Vs)
   rule #buildTableLast(T:TablePtr, Pos:Float, .ValueList) => T
@@ -202,6 +206,10 @@ module LUA
        <heap> M:Map => M[L <- FuncDef<Block, Env>] </heap>
 
   rule function N:IdDotList B:FuncBody => #assign(#idDotListToVar(N:IdDotList), function B)
+  rule function N:IdDotList : M:Id () B:Block end =>
+    #assign(#idDotListToVar(N:IdDotList) . M:Id, function (self) B end)
+  rule function N:IdDotList : M:Id (Args:ParamList) B:Block end =>
+    #assign(#idDotListToVar(N:IdDotList) . M:Id, function (self, Args) B end)
   rule local function Name:Id Body:FuncBody => local Name ~> (Name = function Body):Statement
 
   syntax Var ::= #idDotListToVar(IdDotList) [function]
@@ -405,7 +413,7 @@ module LUA
   rule #getExit(T:Value, K:Value, nil) => #metatableGet(T, "__index") ~> #getExit(T, K, nil)
   rule #getExit(T:Value, L:Value, V:Value) => V when V =/=K nil
   rule nil ~> #getExit(T:Value, K:Value, nil) => nil
-  rule F:FuncPtr ~> #getExit(T:Value, K:Value, nil) => #callEntry(F, (T, K, .ValueList))
+  rule F:FuncPtr ~> #getExit(T:Value, K:Value, nil) => #eval1(#callEntry(F, (T, K, .ValueList)))
   rule F:TablePtr ~> #getExit(T:Value, K:Value, nil) => #get(F, K)
 
   syntax FunctionCall ::= #rawget(Expression, Expression) [strict]
@@ -466,17 +474,24 @@ module LUA
 
   // numeric for
   syntax K ::= #nfor(Id, Expression, Expression, Expression, Block) [strict(2, 3, 4)]
-  rule #nfor(N:Id, Var:Value, Limit:Value, 0.0, B:Block) => .
-  rule #nfor(N:Id, Var:Value, Limit:Value, Step:Value, B:Block) =>
-    (Step >= 0.0 and Var > Limit) or (Step < 0.0 and Var < Limit) ~>
-    #nfor(N, Var, Limit, Step, B) when Step:Value =/=K (0.0):Float
-  rule true ~> #nfor(N:Id, Var:Expression, Limit:Value, Step:Value, B:Block) => break
-  rule false ~> #nfor(N:Id, Var:Expression, Limit:Value, Step:Value, B:Block) =>
-    local N = Var ~> B ~> #nfor(N, Var + Step, Limit, Step, B)
+  rule #nfor(N:Id, Var:Float, Limit:Float, 0.0, B:Block) => .
+  rule #nfor(N:Id, Var:Float, Limit:Float, Step:Float, B:Block) =>
+    (Step >=Float 0.0 andBool Var >Float Limit) orBool (Step <Float 0.0 andBool Var <Float Limit) ~>
+    #nfor(N, Var, Limit, Step, B) when Step =/=Float 0.0
+  rule true ~> #nfor(N:Id, Var:Float, Limit:Float, Step:Float, B:Block) => break
+  rule false ~> #nfor(N:Id, Var:Float, Limit:Float, Step:Float, B:Block) =>
+    local N = Var ~> B ~> #nfor(N, Var +Float Step, Limit, Step, B)
 
-  rule for N:Id = X:Expression, Y:Expression do B:Block end => for N = X, Y, 1 do B end
+  rule #nfor(N:Id, Var:Value, Limit:Value, Step:Value, B:Block) =>
+    #error("'for' initial value must be a number") when notBool isFloat(Var)
+  rule #nfor(N:Id, Var:Float, Limit:Value, Step:Value, B:Block) =>
+    #error("'for' limit must be a number") when notBool isFloat(Limit)
+  rule #nfor(N:Id, Var:Float, Limit:Float, Step:Value, B:Block) =>
+    #error("'for' step must be a number") when notBool isFloat(Step)
+
+  rule for N:Id = X:Expression, Y:Expression do B:Block end => for N = X, Y, 1.0 do B end
   rule for N:Id = X:Expression, Y:Expression, Z:Expression do B:Block end =>
-    #enter(LoopFrame, #nfor(N, #eval1(X), #eval1(Y), #eval1(Z), B))
+    #enter(LoopFrame, #nfor(N, #tonumber(X), #tonumber(Y), #tonumber(Z), B))
 
   // iterator for
   syntax K ::= #ifor(IdList, Expression, Expression, Expression, Block) [strict(2, 3, 4)]
@@ -645,7 +660,7 @@ module LUA
 
   // type coercion
   syntax FunctionCall ::= #toboolean(ExpressionList) [strict]
-                        | #tobooleanImpl(Value) [function]
+  syntax Bool ::= #tobooleanImpl(Value) [function]
   rule #toboolean(V:Value, Vs:ValueList) => #tobooleanImpl(V:Value)
   rule #toboolean(.ValueList) => false
   rule #tobooleanImpl(false) => false
@@ -693,8 +708,12 @@ module LUA
 
   // power
   syntax FunctionCall ::= #pow(Expression, Expression) [strict]
-  rule A:Expression ^ B:Expression => #pow(#arithmeticParam(A), #arithmeticParam(B))
-  rule #pow(A:Float, B:Float) => A ^Float B
+                        | #powImpl(Expression, Expression) [strict]
+  rule A:Expression ^ B:Expression => #pow(#eval1(A), #eval1(B))
+  rule #pow(A:Value, B:Value) => #metatableGetMulti(A, B, "__pow")
+  rule nil ~> #pow(A:Value, B:Value) => #powImpl(#arithmeticParam(A), #arithmeticParam(B))
+  rule F:Value ~> #pow(A:Value, B:Value) => #eval1(#callEntry(F, (A, B, .ValueList))) when F =/=K nil
+  rule #powImpl(A:Float, B:Float) => A ^Float B
 
   // boolean not
   syntax FunctionCall ::= #not(Expression) [strict]
@@ -707,7 +726,7 @@ module LUA
   rule # E:Expression => #len(#eval1(E))
   rule #len(V:Value) => #metatableGet(V, "__len") ~> #len(V)
   rule nil ~> #len(V:Value) => #lenImpl(V, 1.0)
-  rule F:Value ~> #len(V:Value) => #eval1(#callEntry(F, V)) when F =/=K nil
+  rule F:Value ~> #len(V:Value) => #eval1(#callEntry(F, (V, V, .ValueList))) when F =/=K nil
 
   rule #lenImpl(L:TablePtr, Pos:Float) => #rawget(L, Pos) == nil ~> #lenImpl(L, Pos +Float 1.0)
   rule true ~> #lenImpl(L:TablePtr, Pos:Float) => Pos -Float 2.0
@@ -721,13 +740,17 @@ module LUA
   rule - E:Expression => #unm(#eval1(E))
   rule #unm(V:Value) => #metatableGet(V, "__unm") ~> #unm(V)
   rule nil ~> #unm(V:Value) => #unmImpl(#arithmeticParam(V))
-  rule F:Value ~> #unm(V:Value) => #eval1(#callEntry(F, V)) when F =/=K nil
+  rule F:Value ~> #unm(V:Value) => #eval1(#callEntry(F, (V, V, .ValueList))) when F =/=K nil
   rule #unmImpl(E:Float) => --Float E
 
   // bitwise not
   syntax FunctionCall ::= #bnot(Expression) [strict]
-  rule ~ E:Expression => #bnot(#bitwiseParam(E))
-  rule #bnot(E:Float) => IntToFloat(~Int Float2Int(E))
+                        | #bnotImpl(Expression) [strict]
+  rule ~ E:Expression => #bnot(#eval1(E))
+  rule #bnot(V:Value) => #metatableGet(V, "__bnot") ~> #bnot(V)
+  rule nil ~> #bnot(V:Value) => #bnotImpl(#bitwiseParam(V))
+  rule F:Value ~> #bnot(V:Value) => #eval1(#callEntry(F, (V, V, .ValueList))) when F =/=K nil
+  rule #bnotImpl(E:Float) => IntToFloat(~Int Float2Int(E))
 
   // multiplication
   syntax FunctionCall ::= #mul(Expression, Expression) [strict]
@@ -749,20 +772,33 @@ module LUA
 
   // integer division
   syntax FunctionCall ::= #idiv(Expression, Expression) [strict]
-  rule A:Expression / / B:Expression => #idiv(#arithmeticParam(A), #arithmeticParam(B))
-  rule #idiv(A:Float, B:Float) => floorFloat(A /Float B)
+                        | #idivImpl(Expression, Expression) [strict]
+  rule A:Expression / / B:Expression => #idiv(#eval1(A), #eval1(B))
+  rule #idiv(A:Value, B:Value) => #metatableGetMulti(A, B, "__idiv") ~> #idiv(A, B)
+  rule nil ~> #idiv(A:Value, B:Value) => #idivImpl(#arithmeticParam(A), #arithmeticParam(B))
+  rule F:Value ~> #idiv(A:Value, B:Value) => #eval1(#callEntry(F, (A, B, .ValueList))) when F =/=K nil
+  rule #idivImpl(A:Float, B:Float) => floorFloat(A /Float B)
 
   // integer division with left param as integer constant
-  syntax FunctionCall ::= #iidiv(Expression, Expression) [strict]
-  rule A:Expression i/ / B:Expression => #iidiv(#arithmeticParam(A), #arithmeticParam(B))
-  rule #iidiv(A:Float, B:Float) => #idiv(A, B) when B =/=Float 0.0
-  rule #iidiv(A:Float, 0.0) => #error("attempt to divide by zero")
+  syntax FunctionCall ::= #iidiv(Float, Expression) [strict(2)]
+                        | #iidivImpl(Float, Expression) [strict(2)]
+  rule A:Float i/ / B:Expression => #iidiv(A, #eval1(B))
+  rule #iidiv(A:Float, B:Value) => #metatableGet(B, "__idiv") ~> #iidiv(A, B)
+  rule nil ~> #iidiv(A:Float, B:Value) => #iidivImpl(A, #arithmeticParam(B))
+  rule F:Value ~> #iidiv(A:Float, B:Value) => #eval1(#callEntry(F, (A, B, .ValueList))) when F =/=K nil
+  rule #iidivImpl(A:Float, B:Value) => #idiv(A, B) when B =/=K (0.0):Float
+  rule #iidivImpl(A:Float, 0.0) => #error("attempt to divide by zero")
 
   // modulo
   syntax FunctionCall ::= #mod(Expression, Expression) [strict]
-  rule A:Expression % B:Expression => #mod(#arithmeticParam(A), #arithmeticParam(B))
-  rule #mod(A:Float, B:Float) => A -Float floorFloat(A /Float B) *Float B when B =/=Float 0.0
-  rule #mod(A:Float, 0.0) => #error("attempt to perform 'n%0'")
+                        | #modImpl(Expression, Expression) [strict]
+  rule A:Expression % B:Expression => #mod(#eval1(A), #eval1(B))
+  rule #mod(A:Value, B:Value) => #metatableGetMulti(A, B, "__mod") ~> #mod(A, B)
+  rule nil ~> #mod(A, B) => #modImpl(#arithmeticParam(A), #arithmeticParam(B))
+  rule F:Value ~> #mod(A:Value, B:Value) => #eval1(#callEntry(F, (A, B, .ValueList))) when F =/=K nil
+
+  rule #modImpl(A:Float, B:Float) => A -Float floorFloat(A /Float B) *Float B when B =/=Float 0.0
+  rule #modImpl(A:Float, 0.0) => #error("attempt to perform 'n%0'")
 
   // addition
   syntax FunctionCall ::= #add(Expression, Expression) [strict]
@@ -792,29 +828,49 @@ module LUA
   rule #concatImpl(A:String, B:String) => A +String B
 
   // bitwise left shift
-  syntax FunctionCall ::= #blshift(Expression, Expression) [strict]
-  rule A:Expression << B:Expression => #blshift(#bitwiseParam(A), #bitwiseParam(B))
-  rule #blshift(A:Float, B:Float) => IntToFloat(Float2Int(A) <<Int Float2Int(B))    // >
+  syntax FunctionCall ::= #shl(Expression, Expression) [strict]
+                        | #shlImpl(Expression, Expression) [strict]
+  rule A:Expression << B:Expression => #shl(#eval1(A), #eval1(B))
+  rule #shl(A:Value, B:Value) => #metatableGetMulti(A, B, "__shl") ~> #shl(A, B)
+  rule nil ~> #shl(A:Value, B:Value) => #shlImpl(#bitwiseParam(A), #bitwiseParam(B))
+  rule F:Value ~> #shl(A:Value, B:Value) => #eval1(#callEntry(F, (A, B, .ValueList))) when F =/=K nil
+  rule #shlImpl(A:Float, B:Float) => IntToFloat(Float2Int(A) <<Int Float2Int(B))    // >
 
   // bitwise right shift
-  syntax FunctionCall ::= #brshift(Expression, Expression) [strict]
-  rule A:Expression >> B:Expression => #brshift(#bitwiseParam(A), #bitwiseParam(B))
-  rule #brshift(A:Float, B:Float) => IntToFloat(Float2Int(A) >>Int Float2Int(B))
+  syntax FunctionCall ::= #shr(Expression, Expression) [strict]
+                        | #shrImpl(Expression, Expression) [strict]
+  rule A:Expression >> B:Expression => #shr(#eval1(A), #eval1(B))
+  rule #shr(A:Value, B:Value) => #metatableGetMulti(A, B, "__shr") ~> #shr(A, B)
+  rule nil ~> #shr(A:Value, B:Value) => #shrImpl(#bitwiseParam(A), #bitwiseParam(B))
+  rule F:Value ~> #shr(A:Value, B:Value) => #eval1(#callEntry(F, (A, B, .ValueList))) when F =/=K nil
+  rule #shrImpl(A:Float, B:Float) => IntToFloat(Float2Int(A) >>Int Float2Int(B))
 
   // bitwise and
   syntax FunctionCall ::= #band(Expression, Expression) [strict]
-  rule A:Expression & B:Expression => #band(#bitwiseParam(A), #bitwiseParam(B))
-  rule #band(A:Float, B:Float) => IntToFloat(Float2Int(A) &Int Float2Int(B))
+                        | #bandImpl(Expression, Expression) [strict]
+  rule A:Expression & B:Expression => #band(#eval1(A), #eval1(B))
+  rule #band(A:Value, B:Value) => #metatableGetMulti(A, B, "__band") ~> #band(A, B)
+  rule nil ~> #band(A:Value, B:Value) => #bandImpl(#bitwiseParam(A), #bitwiseParam(B))
+  rule F:Value ~> #band(A:Value, B:Value) => #eval1(#callEntry(F, (A, B, .ValueList))) when F =/=K nil
+  rule #bandImpl(A:Float, B:Float) => IntToFloat(Float2Int(A) &Int Float2Int(B))
 
   // bitwise xor
   syntax FunctionCall ::= #bxor(Expression, Expression) [strict]
-  rule A:Expression ~ B:Expression => #bxor(#bitwiseParam(A), #bitwiseParam(B))
-  rule #bxor(A:Float, B:Float) => IntToFloat(Float2Int(A) xorInt Float2Int(B))
+                        | #bxorImpl(Expression, Expression) [strict]
+  rule A:Expression ~ B:Expression => #bxor(#eval1(A), #eval1(B))
+  rule #bxor(A:Value, B:Value) => #metatableGetMulti(A, B, "__bxor") ~> #bxor(A, B)
+  rule nil ~> #bxor(A:Value, B:Value) => #bxorImpl(#bitwiseParam(A), #bitwiseParam(B))
+  rule F:Value ~> #bxor(A:Value, B:Value) => #eval1(#callEntry(F, (A, B, .ValueList))) when F =/=K nil
+  rule #bxorImpl(A:Float, B:Float) => IntToFloat(Float2Int(A) xorInt Float2Int(B))
 
   // bitwise or
   syntax FunctionCall ::= #bor(Expression, Expression) [strict]
-  rule A:Expression | B:Expression => #bor(#bitwiseParam(A), #bitwiseParam(B))
-  rule #bor(A:Float, B:Float) => IntToFloat(Float2Int(A) |Int Float2Int(B))
+                        | #borImpl(Expression, Expression) [strict]
+  rule A:Expression ~ B:Expression => #bor(#eval1(A), #eval1(B))
+  rule #bor(A:Value, B:Value) => #metatableGetMulti(A, B, "__bor") ~> #bor(A, B)
+  rule nil ~> #bor(A:Value, B:Value) => #borImpl(#bitwiseParam(A), #bitwiseParam(B))
+  rule F:Value ~> #bor(A:Value, B:Value) => #eval1(#callEntry(F, (A, B, .ValueList))) when F =/=K nil
+  rule #borImpl(A:Float, B:Float) => IntToFloat(Float2Int(A) |Int Float2Int(B))
 
   // lower than
   syntax FunctionCall ::= #lt(Expression, Expression) [strict]
@@ -862,13 +918,13 @@ module LUA
 
   // boolean and
   syntax K ::= #andThen(Expression)
-  rule A:Expression and B:Expression => #toboolean(A) ~> #andThen(B)
-  rule true ~> #andThen(B:Expression) => B
-  rule false ~> #andThen(B:Expression) => false
+  rule A:Expression and B:Expression => #eval1(A) ~> #andThen(B)
+  rule V:Value ~> #andThen(B:Expression) => B when #tobooleanImpl(V)
+  rule V:Value ~> #andThen(B:Expression) => V when notBool #tobooleanImpl(V)
 
   // boolean or
   syntax K ::= #orThen(Expression)
-  rule A:Expression or B:Expression => #toboolean(A) ~> #orThen(B)
-  rule true ~> #orThen(B:Expression) => true
-  rule false ~> #orThen(B:Expression) => B
+  rule A:Expression or B:Expression => #eval1(A) ~> #orThen(B)
+  rule V:Value ~> #orThen(B:Expression) => V when #tobooleanImpl(V)
+  rule V:Value ~> #orThen(B:Expression) => B when notBool #tobooleanImpl(V)
 endmodule
