@@ -1,9 +1,6 @@
-107-thread      # coroutines not implemented
 108-userdata    # userdata not implemented
 203-lexico      # string literals not completely implemented
 204-grammar     # load not implemented
-214-coroutine   # coroutines not implemented
-223-iterator    # coroutines not implemented
 241-standalone  # popen not implemented
 242-luac        # popen not implemented
 

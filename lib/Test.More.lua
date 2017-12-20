@@ -38,6 +38,7 @@ function diag(msg)
 end
 
 function like(str, pattern, name)
+  str = tostring(str)
   --local pass = match(str, pattern)
   local pass = true
   ok(pass, name)

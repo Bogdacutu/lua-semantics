@@ -113,22 +113,28 @@ module LUA
 
   configuration <T>
                   <k>
-                    local _ENV = { math = {}, io = {}, string = {}, table = {} } ~> (_G = _ENV):Statement
+                    local _ENV = { coroutine = {}, math = {}, io = {}, string = {}, table = {} }
+                    ~> (_G = _ENV):Statement
 
                     // builtin functions
-                    ~> (rawget = function(t, k) .Statements return #rawget(t, k) end):Statement
-                    ~> (rawset = function(t, k, v) #rawset(t, k, v) .Statements end):Statement
-                    ~> (print = function(...) #print(...) .Statements end):Statement
-                    ~> (tostring = function(o) .Statements return #tostringFunc(o) end):Statement
-                    ~> (tonumber = function(o) .Statements return #tonumber(o) end):Statement
-                    ~> (next = function(t, i) .Statements return #next(t, i) end):Statement
-                    ~> (type = function(o) .Statements return #typeFunc(o) end):Statement
+                    ~> (coroutine.create = function(f) .Statements return #coroutineCreate(f) end):Statement
+                    ~> (coroutine.resume = function(t, ...) .Statements return #coroutineResume(t, ...) end):Statement
+                    ~> (coroutine.running = function() .Statements return #coroutineRunning() end):Statement
+                    ~> (coroutine.status = function(t) .Statements return #coroutineStatus(t) end):Statement
+                    ~> (coroutine.yield = function(...) .Statements return #coroutineYield(true, ...) end):Statement
                     ~> (error = function(m) .Statements return #error(m) end):Statement
-                    ~> (pcall = function(f, ...) .Statements return #pcall(f, ...) end):Statement
                     ~> (getmetatable = function(t) .Statements return #getmetatable(t) end):Statement
-                    ~> (setmetatable = function(t, mt) #setmetatable(t, mt) .Statements return t end):Statement
                     ~> (math.floor = function(x) .Statements return #mathFloor(x) end):Statement
                     ~> (math.sqrt = function(x) .Statements return #mathSqrt(x) end):Statement
+                    ~> (next = function(t, i) .Statements return #next(t, i) end):Statement
+                    ~> (pcall = function(f, ...) .Statements return #pcall(f, ...) end):Statement
+                    ~> (print = function(...) #print(...) .Statements end):Statement
+                    ~> (rawget = function(t, k) .Statements return #rawget(t, k) end):Statement
+                    ~> (rawset = function(t, k, v) #rawset(t, k, v) .Statements end):Statement
+                    ~> (setmetatable = function(t, mt) #setmetatable(t, mt) .Statements return t end):Statement
+                    ~> (tonumber = function(o) .Statements return #tonumber(o) end):Statement
+                    ~> (tostring = function(o) .Statements return #tostringFunc(o) end):Statement
+                    ~> (type = function(o) .Statements return #typeFunc(o) end):Statement
 
                     ~> $PGM:Statements
                   </k>
@@ -137,12 +143,13 @@ module LUA
                   <heap> .Map </heap>
                   <metatables> .Map </metatables>
                   <fstack> .List </fstack>
+                  <cstack> .List </cstack>
                   <out stream="stdout"> .List </out>
                   <freshint> 0 </freshint>
                   <error> . </error>
                 </T>
 
-  syntax Value ::= TablePtr | FuncPtr
+  syntax Value ::= TablePtr | FuncPtr | ThreadPtr
   syntax ValueList ::= List{Value, ","}
   syntax ExpressionList ::= ValueList
   syntax KResult ::= Value | ValueList | Int
@@ -217,6 +224,67 @@ module LUA
   rule #idDotListToVar(N:Id . Ns:IdDotList) => #idDotListToVarImpl(Ns, N)
   rule #idDotListToVarImpl((N:Id . Ns:IdDotList), V:Var) => #idDotListToVarImpl(Ns, (V . N))
   rule #idDotListToVarImpl(.IdDotList, V:Var) => V
+
+  // coroutines
+  syntax ThreadPtr ::= "Thread" "<" Int ">"
+  syntax ThreadDef ::= "ThreadDef" "<" K "," Map "," List   ">"
+                     // ThreadDef   < <k> , <env> , <fstack> >
+                     | "ThreadDef" "<running>"
+                     | "ThreadDef" "<dead>"
+
+  syntax K ::= "#coroutineInit" "(" ")"
+  rule Args:ValueList ~> #coroutineInit() => .
+
+  syntax FunctionCall ::= #coroutineCreate(Expression) [strict]
+                        | #coroutineCreateImpl(Value, K) [strict(2)]
+  rule #coroutineCreate(V:Value) => #coroutineCreateImpl(V, #freshint())
+  rule <k> #coroutineCreateImpl(V:Value, L:Int) => Thread<L> ...</k>
+       <heap> M:Map => M[L <- ThreadDef<
+           #coroutineInit() ~> #coroutineYield(true, #callEntry(V, #coroutineYield(.ValueList))),
+           .Map,
+           .List
+         >] </heap>
+
+  syntax K ::= #coroutineResumeAfter(ValueList, K) [function]
+  rule #coroutineResumeAfter(.ValueList, Rest:K) => Rest
+  rule #coroutineResumeAfter(Args:ValueList, Rest:K) => Args ~> Rest
+
+  syntax ThreadDef ::= #toThreadDef(K, Map, List) [function]
+  rule #toThreadDef(Rest:K, Env:Map, Fstack:List) => ThreadDef<Rest, Env, Fstack> when Rest:K =/=K #emptyK
+  rule #toThreadDef(.K, Env:Map, Fstack:List) => ThreadDef<dead>
+
+  syntax FunctionCall ::= #coroutineResume(Expression, ExpressionList) [strict]
+  rule <k> #coroutineResume(Thread<L:Int>, Args:ValueList) ~> Rest:K => #coroutineResumeAfter(Args, Next) </k>
+       <heap>... L |-> (ThreadDef<Next:K, Env:Map, Fstack:List> => ThreadDef<running>) ...</heap>
+       <env> CEnv:Map => Env </env>
+       <fstack> CFstack:List => Fstack </fstack>
+       <cstack> .List => (ListItem(ThreadDef<Rest, CEnv, CFstack>) ListItem(L)) ...</cstack>
+
+  syntax FunctionCall ::= #coroutineYield(ExpressionList) [strict]
+  rule <k> #coroutineYield(Args:ValueList) ~> Rest:K => Args ~> Next </k>
+       <env> CEnv:Map => Env </env>
+       <fstack> CFstack:List => Fstack </fstack>
+       <cstack> (ListItem(ThreadDef<Next:K, Env:Map, Fstack:List>) ListItem(L:Int)) => .List ...</cstack>
+       <heap>... L |-> (_ => #toThreadDef(Rest, CEnv, CFstack)) ...</heap>
+  rule <k> Rest:K => #coroutineYield(false, Err, .ValueList) </k>
+       <fstack> .List </fstack>
+       <error> Err:Value => . </error>
+  rule <k> #coroutineYield(Args:ValueList) => #error("attempt to yield") ...</k>
+       <cstack> .List </cstack>
+
+  syntax FunctionCall ::= #coroutineStatus(Expression) [strict]
+  rule <k> #coroutineStatus(Thread<L:Int>) => "suspended" ...</k>
+       <heap>... L |-> ThreadDef<_, _, _> ...</heap>
+  rule <k> #coroutineStatus(Thread<L:Int>) => "running" ...</k>
+       <heap>... L |-> ThreadDef<running> ...</heap>
+  rule <k> #coroutineStatus(Thread<L:Int>) => "dead" ...</k>
+       <heap>... L |-> ThreadDef<dead> ...</heap>
+
+  syntax FunctionCall ::= "#coroutineRunning" "(" ")"
+  rule <k> #coroutineRunning() => (Thread<L>, false, .ValueList) ...</k>
+       <cstack> ListItem(_) ListItem(L:Int) ...</cstack>
+  rule <k> #coroutineRunning() => (Thread<0>, true, .ValueList) ...</k>
+       <cstack> .List </cstack>
 
   // value list utils
   syntax ValueList ::= #reverseList(ValueList) [function]
@@ -316,9 +384,7 @@ module LUA
                         | #return(FrameType) [klabel(#return_nil)]
                         | #returnImpl(FrameType, K)
   rule <k> #return(T:FrameType, E:ValueList) ~> Rest:K => #returnImpl(T, (E:ValueList):K) </k>
-  rule <k> #return(T:FrameType, E:ValueList) => #returnImpl(T, E:ValueList) </k>
   rule <k> #return(T:FrameType) ~> Rest:K => #returnImpl(T, .) </k>
-  rule <k> #return(T:FrameType) => #returnImpl(T, .) </k>
 
   rule <k> #returnImpl(T:FrameType, E:K) => E ~> Rest </k>
        <env> _ => M </env>
@@ -507,8 +573,10 @@ module LUA
 
   rule for N:IdList in (F:Value, (S:Value, (Var:Value, Rest:ValueList))) do B:Block end =>
     #enter(LoopFrame, #ifor(N, F, S, Var, B))
-  rule for N:IdList in (F:Value, (S:Value, Rest:ValueList)) do B:Block end =>
+  rule for N:IdList in (F:Value, (S:Value, .ValueList)) do B:Block end =>
     #enter(LoopFrame, #ifor(N, F, S, nil, B))
+  rule for N:IdList in (F:Value, .ValueList) do B:Block end =>
+    #enter(LoopFrame, #ifor(N, F, nil, nil, B))
 
 
 
@@ -529,8 +597,9 @@ module LUA
   rule #tostring(true) => "true"
   rule #tostring(false) => "false"
   rule #tostring(nil) => "nil"
-  rule #tostring(Table<L:Int>) => "Table<" +String Int2String(L) +String ">"
-  rule #tostring(Func<L:Int>) => "Func<" +String Int2String(L) +String ">"
+  rule #tostring(Table<L:Int>) => "table: 0x" +String Base2String(L, 16)
+  rule #tostring(Func<L:Int>) => "function: 0x" +String Base2String(L, 16)
+  rule #tostring(Thread<L:Int>) => "thread: 0x" +String Base2String(L, 16)
 
   syntax FunctionCall ::= #tostringFunc(Expression) [strict]
                         | #tostringFuncImpl(Expression)
@@ -573,6 +642,7 @@ module LUA
   rule #type(S:String) => "string"
   rule #type(F:FuncPtr) => "function"
   rule #type(T:TablePtr) => "table"
+  rule #type(T:ThreadPtr) => "thread"
 
   syntax FunctionCall ::= #typeFunc(Expression) [strict]
   rule #typeFunc(V:Value) => #type(V)
@@ -710,7 +780,7 @@ module LUA
   syntax FunctionCall ::= #pow(Expression, Expression) [strict]
                         | #powImpl(Expression, Expression) [strict]
   rule A:Expression ^ B:Expression => #pow(#eval1(A), #eval1(B))
-  rule #pow(A:Value, B:Value) => #metatableGetMulti(A, B, "__pow")
+  rule #pow(A:Value, B:Value) => #metatableGetMulti(A, B, "__pow") ~> #pow(A, B)
   rule nil ~> #pow(A:Value, B:Value) => #powImpl(#arithmeticParam(A), #arithmeticParam(B))
   rule F:Value ~> #pow(A:Value, B:Value) => #eval1(#callEntry(F, (A, B, .ValueList))) when F =/=K nil
   rule #powImpl(A:Float, B:Float) => A ^Float B
@@ -786,6 +856,7 @@ module LUA
   rule #iidiv(A:Float, B:Value) => #metatableGet(B, "__idiv") ~> #iidiv(A, B)
   rule nil ~> #iidiv(A:Float, B:Value) => #iidivImpl(A, #arithmeticParam(B))
   rule F:Value ~> #iidiv(A:Float, B:Value) => #eval1(#callEntry(F, (A, B, .ValueList))) when F =/=K nil
+
   rule #iidivImpl(A:Float, B:Value) => #idiv(A, B) when B =/=K (0.0):Float
   rule #iidivImpl(A:Float, 0.0) => #error("attempt to divide by zero")
 
@@ -866,7 +937,7 @@ module LUA
   // bitwise or
   syntax FunctionCall ::= #bor(Expression, Expression) [strict]
                         | #borImpl(Expression, Expression) [strict]
-  rule A:Expression ~ B:Expression => #bor(#eval1(A), #eval1(B))
+  rule A:Expression | B:Expression => #bor(#eval1(A), #eval1(B))
   rule #bor(A:Value, B:Value) => #metatableGetMulti(A, B, "__bor") ~> #bor(A, B)
   rule nil ~> #bor(A:Value, B:Value) => #borImpl(#bitwiseParam(A), #bitwiseParam(B))
   rule F:Value ~> #bor(A:Value, B:Value) => #eval1(#callEntry(F, (A, B, .ValueList))) when F =/=K nil

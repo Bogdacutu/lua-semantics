@@ -1,8 +1,17 @@
 
-local next = next
+local _coroutineCreate = coroutine.create
+local _coroutineResume = coroutine.resume
+local coroutineRunning = coroutine.running
+local _coroutineStatus = coroutine.status
+local error = error
 local getmetatable = getmetatable
+local next = next
+local pcall = pcall
 local setmetatable = setmetatable
 local tostring = tostring
+local type = type
+
+
 
 setmetatable("", {
   __index = string
@@ -54,12 +63,72 @@ local pairs = function(a)
 end
 _G.pairs = pairs
 
+xpcall = function(f, h, ...)
+  return pcall(f, ...)
+end
+
 
 
 require = function() end
 
 load = function()
   return nil, "[script]:1: cannot evaluate strings"
+end
+
+
+
+local coroutineCreate = function(f)
+  if type(f) ~= "function" then
+    error("bad argument #1 to 'create' (function expected, got " .. type(f) .. ")")
+  end
+  local t = _coroutineCreate(f)
+  -- the first yield gets the coroutine ready to take parameters
+  _coroutineResume(t)
+  return t
+end
+coroutine.create = coroutineCreate
+
+local coroutineResume = function(t, ...)
+  if type(t) ~= "thread" then
+    error("bad argument #1 to 'resume' (thread expected)")
+  end
+  local s = _coroutineStatus(t)
+  if s == "suspended" then
+    return _coroutineResume(t, ...)
+  else
+    return false, "cannot resume " .. s .. " coroutine"
+  end
+end
+coroutine.resume = coroutineResume
+
+local coroutineStatus = function(t)
+  if type(t) ~= "thread" then
+    error("bad argument #1 to 'status' (thread expected)")
+  end
+  return _coroutineStatus(t)
+end
+coroutine.status = coroutineStatus
+
+coroutine.wrap = function(f)
+  if type(f) ~= "function" then
+    error("bad argument #1 to 'wrap' (function expected, got " .. type(f) .. ")")
+  end
+  local t = coroutineCreate(f)
+  local ret = function(r, ...)
+    if r then
+      return ...
+    else
+      error(...)
+    end
+  end
+  return function(...)
+    return ret(_coroutineResume(t, ...))
+  end
+end
+
+coroutine.isyieldable = function()
+  local t, main = coroutineRunning()
+  return not main
 end
 
 
@@ -103,11 +172,11 @@ table.concat = function(t, sep, i, j)
   end
   local s = ""
   if i <= j then
-    s = t[i]
+    s = tostring(t[i])
   end
   while i < j do
     i = i + 1
-    s = s .. sep .. t[i]
+    s = s .. sep .. tostring(t[i])
   end
   return s
 end
