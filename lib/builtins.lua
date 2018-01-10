@@ -8,6 +8,7 @@ local getmetatable = getmetatable
 local next = next
 local pcall = pcall
 local setmetatable = setmetatable
+local stringByte = string.byte
 local tostring = tostring
 local type = type
 
@@ -134,6 +135,44 @@ end
 
 
 math.pi = 3.141592653589793
+
+math.huge = 1 / 0
+
+math.maxinteger = ~0 >> 1
+
+math.mininteger = ~math.maxinteger
+
+math.abs = function (x)
+  if x < 0 then
+    return -x
+  else
+    return x
+  end
+end
+
+
+
+string.byte = function(s, i, j)
+  i = i or 1
+  if i <= 0 then
+    i = #s + i + 1
+  end
+  j = j or i
+  return stringByte(s, i, j)
+end
+
+string.len = function(s)
+  return #s
+end
+
+string.rep = function(s, n)
+  local r = ""
+  while n > 0 do
+    r = r .. s
+    n = n - 1
+  end
+  return r
+end
 
 
 

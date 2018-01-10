@@ -132,6 +132,8 @@ module LUA
                     ~> (rawget = function(t, k) .Statements return #rawget(t, k) end):Statement
                     ~> (rawset = function(t, k, v) #rawset(t, k, v) .Statements end):Statement
                     ~> (setmetatable = function(t, mt) #setmetatable(t, mt) .Statements return t end):Statement
+                    ~> (string.byte = function(s, i, j) .Statements return #stringByte(s, i, j) end):Statement
+                    ~> (string.char = function(...) .Statements return #stringChar(...) end):Statement
                     ~> (tonumber = function(o) .Statements return #tonumber(o) end):Statement
                     ~> (tostring = function(o) .Statements return #tostringFunc(o) end):Statement
                     ~> (type = function(o) .Statements return #typeFunc(o) end):Statement
@@ -246,26 +248,28 @@ module LUA
          >] </heap>
 
   syntax K ::= #coroutineResumeAfter(ValueList, K) [function]
-  rule #coroutineResumeAfter(.ValueList, Rest:K) => Rest
   rule #coroutineResumeAfter(Args:ValueList, Rest:K) => Args ~> Rest
 
-  syntax ThreadDef ::= #toThreadDef(K, Map, List) [function]
-  rule #toThreadDef(Rest:K, Env:Map, Fstack:List) => ThreadDef<Rest, Env, Fstack> when Rest:K =/=K #emptyK
-  rule #toThreadDef(.K, Env:Map, Fstack:List) => ThreadDef<dead>
+  syntax K ::= #toThreadDef(K, Map, List)
+  rule #toThreadDef(R:K ~> Rest:K, Env:Map, Fstack:List) => ThreadDef<R ~> Rest, Env, Fstack> when R =/=K .::K
+  rule #toThreadDef(.::K, Env:Map, Fstack:List) => ThreadDef<dead>
 
   syntax FunctionCall ::= #coroutineResume(Expression, ExpressionList) [strict]
   rule <k> #coroutineResume(Thread<L:Int>, Args:ValueList) ~> Rest:K => #coroutineResumeAfter(Args, Next) </k>
-       <heap>... L |-> (ThreadDef<Next:K, Env:Map, Fstack:List> => ThreadDef<running>) ...</heap>
-       <env> CEnv:Map => Env </env>
-       <fstack> CFstack:List => Fstack </fstack>
-       <cstack> .List => (ListItem(ThreadDef<Rest, CEnv, CFstack>) ListItem(L)) ...</cstack>
+       <heap>... L:Int |-> (ThreadDef<Next:K, Env:Map, Fstack:List> => ThreadDef<running>) ...</heap>
+       <env> CEnv:Map => Env:Map </env>
+       <fstack> CFstack:List => Fstack:List </fstack>
+       <cstack> .List => (ListItem(ThreadDef<Rest:K, CEnv:Map, CFstack:List>) ListItem(L:Int)) ...</cstack>
 
   syntax FunctionCall ::= #coroutineYield(ExpressionList) [strict]
-  rule <k> #coroutineYield(Args:ValueList) ~> Rest:K => Args ~> Next </k>
-       <env> CEnv:Map => Env </env>
-       <fstack> CFstack:List => Fstack </fstack>
+  rule <k> #coroutineYield(Args:ValueList) ~> Rest:K => #toThreadDef(Rest:K, CEnv:Map, CFstack:List) ~> #coroutineYield(Args) </k>
+       <env> CEnv:Map </env>
+       <fstack> CFstack:List </fstack>
+  rule <k> T:ThreadDef ~> #coroutineYield(Args:ValueList) => Args ~> Next </k>
+       <env> _ => Env:Map </env>
+       <fstack> _ => Fstack:List </fstack>
        <cstack> (ListItem(ThreadDef<Next:K, Env:Map, Fstack:List>) ListItem(L:Int)) => .List ...</cstack>
-       <heap>... L |-> (_ => #toThreadDef(Rest, CEnv, CFstack)) ...</heap>
+       <heap>... L |-> (ThreadDef<running> => T:ThreadDef) ...</heap>
   rule <k> Rest:K => #coroutineYield(false, Err, .ValueList) </k>
        <fstack> .List </fstack>
        <error> Err:Value => . </error>
@@ -349,7 +353,8 @@ module LUA
     #metatableGet(F, "__call") ~> #callEntry(F, Args) when notBool isFuncPtr(F)
   rule nil ~> #callEntry(F:Value, Args:ValueList) =>
     #error("attempt to call a " +String #type(F) +String " value")
-  rule E:Value ~> #callEntry(F:Value, Args:ValueList) => #callEntry(E, (F, Args:ValueList))
+  rule E:Value ~> #callEntry(F:Value, Args:ValueList) =>
+    #callEntry(E, (F, Args:ValueList)) when E =/=K nil
   rule #callEntry(FuncDef<P:ParamList, B:Block, Env:Map>, Args:ValueList) =>
     #setEnv(Env) ~> #declareLocal("...") ~> #callImpl(FuncDef<P, B, Env>, Args)
   rule #callEntry(FuncDef<B:Block, Env:Map>, Args:ValueList) =>
@@ -374,6 +379,7 @@ module LUA
        <env> _ => M:Map </env>
 
   syntax StackFrame ::= "StackFrame" "<" FrameType "," Map "," K ">"
+                     //  StackFrame   <  FrameType  , <env> , <k> >
   syntax FrameType ::= "CallFrame" | "LoopFrame" | "ScopeFrame" | "CatchFrame"
   syntax K ::= #enter(FrameType, K)
   rule <k> #enter(T:FrameType, B) ~> Rest => B </k>
@@ -503,7 +509,15 @@ module LUA
        <heap>... M |-> MT ...</heap> when notBool (K in keys(MT))
   rule <k> #metatableGet(Table<L:Int>, K:String) => nil ...</k>
        <metatables> MTs </metatables> when notBool (L in keys(MTs))
-  rule #metatableGet(V:Value, K:String) => nil when notBool isTablePtr(V)
+  rule <k> #metatableGet(S:String, K:String) => MT:Map[K] ...</k>
+       <metatables>... "" |-> Table<M:Int> ...</metatables>
+       <heap>... M |-> MT ...</heap> when K in keys(MT)
+  rule <k> #metatableGet(S:String, K:String) => nil ...</k>
+       <metatables>... "" |-> Table<M:Int> ...</metatables>
+       <heap>... M |-> MT ...</heap> when notBool (K in keys(MT))
+  rule <k> #metatableGet(S:String, K:String) => nil ...</k>
+       <metatables> MTs </metatables> when notBool ("" in keys(MTs))
+  rule #metatableGet(V:Value, K:String) => nil when notBool (isTablePtr(V) orBool isString(V))
 
   syntax FunctionCall ::= #metatableGetMulti(ValueList, String)
   rule #metatableGetMulti((V:Value, Vs:ValueList), K:String) => #metatableGet(V, K) ~> #metatableGetMulti(Vs, K)
@@ -693,6 +707,23 @@ module LUA
   syntax FunctionCall ::= #mathSqrt(Expression) [strict]
   rule #mathSqrt(F:Float) => sqrtFloat(F)
 
+  // builtin string.byte
+  syntax FunctionCall ::= #stringByte(Expression, Expression, Expression) [strict]
+                        | #stringByteImpl(String, Float, Float, ValueList) [function]
+  rule #stringByte(S:String, I:Float, J:Float) => #stringByteImpl(S, I, J, .ValueList)
+  rule #stringByteImpl(S:String, I:Float, J:Float, V:ValueList) =>
+    #stringByteImpl(S, I +Float 1.0, J, (IntToFloat(ordChar(substrString(S, Float2Int(I) -Int 1, Float2Int(I)))), V:ValueList))
+    when I <=Float J andBool Float2Int(I) <=Int lengthString(S)
+  rule #stringByteImpl(S:String, I:Float, J:Float, V:ValueList) => #reverseList(V)
+    when notBool (I <=Float J andBool Float2Int(I) <=Int lengthString(S))
+
+  // builtin string.char
+  syntax FunctionCall ::= #stringChar(ExpressionList) [strict]
+                        | #stringCharImpl(ValueList, String) [function]
+  rule #stringChar(V:ValueList) => #stringCharImpl(V, "")
+  rule #stringCharImpl((F:Float, Vs:ValueList), S:String) => #stringCharImpl(Vs, S +String chrChar(Float2Int(F)))
+  rule #stringCharImpl(.ValueList, S:String) => S
+
 
 
   // predefined error types
@@ -720,7 +751,7 @@ module LUA
   syntax FunctionCall ::= #callHelper(ValueList)
                         | #callHelperImpl(String, ValueList)
                         | "#callHelperExit" "(" ")"
-  rule #callHelper(V:ValueList) => #callHelperImpl("nodejs\x01luahelper.js", V:ValueList)
+  rule #callHelper(V:ValueList) => #callHelperImpl("node\x01luahelper.js", V:ValueList)
   rule #callHelperImpl(S:String, (V:String, Vs:ValueList)) =>
     #callHelperImpl(S:String +String "\x01" +String V:String, Vs:ValueList)
   rule #callHelperImpl(S:String, .ValueList) => #system(S) ~> #callHelperExit()

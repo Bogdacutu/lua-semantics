@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# https://gist.github.com/jaytaylor/6527607
+function timeout() { perl -e 'alarm shift; exec @ARGV' "$@"; }
+
 kompile -v --debug lua.k || exit 1
 echo
 
